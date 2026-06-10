@@ -6,8 +6,6 @@ global ExcelCommandPanelGui := ""
 
 #HotIf WinActive("ahk_exe EXCEL.EXE")
 ^+e::ShowExcelCommandPanel()
-^+q::AddPrefixToExcelSelection()
-^+b::DedupeAndGroupExcelSelectedColumn()
 #HotIf
 
 ShowExcelCommandPanel() {
@@ -28,10 +26,10 @@ ShowExcelCommandPanel() {
 
     panel.AddText("w360", "选择要执行的 Excel 快捷功能：")
 
-    prefixButton := panel.AddButton("xm y+12 w360 h42", "添加前缀  Ctrl+Shift+Q")
+    prefixButton := panel.AddButton("xm y+12 w360 h42", "添加前缀")
     prefixButton.OnEvent("Click", (*) => RunPanelCommand(AddPrefixToExcelSelection))
 
-    dedupeButton := panel.AddButton("xm y+10 w360 h42", "去重整理  Ctrl+Shift+B")
+    dedupeButton := panel.AddButton("xm y+10 w360 h42", "去重整理")
     dedupeButton.OnEvent("Click", (*) => RunPanelCommand(DedupeAndGroupExcelSelectedColumn))
 
     panel.AddText("xm y+12 w360 c666666", "面板快捷键：Ctrl+Shift+E。功能只在 Excel 活动窗口内生效。")

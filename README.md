@@ -5,9 +5,8 @@
 ## 功能
 
 - `Ctrl+Shift+E`：打开 Excel 快捷功能面板
-- 面板按钮：添加前缀，等同于 `Ctrl+Shift+Q`
-- 面板按钮：去重整理，等同于 `Ctrl+Shift+B`
-- 保留直接快捷键 `Ctrl+Shift+Q` 和 `Ctrl+Shift+B`
+- 面板按钮：添加前缀
+- 面板按钮：去重整理
 - 所有快捷键只在活动窗口是 Excel 时生效
 
 ## 安装
@@ -30,4 +29,4 @@ Set-Location E:\366256\vibecoding\excel-ahk-command-panel
 
 ## 后续添加功能
 
-以后新增 Excel 快捷功能时，优先在 `src\excel-command-panel.ahk` 中新增函数，然后在 `ShowExcelCommandPanel()` 里增加按钮，并在 `#HotIf WinActive("ahk_exe EXCEL.EXE")` 段中按需绑定直接快捷键。
+以后新增 Excel 快捷功能时，优先在 `src\excel-command-panel.ahk` 中新增函数，然后在 `ShowExcelCommandPanel()` 里增加按钮。统一入口只保留 `Ctrl+Shift+E`。
