@@ -3,9 +3,11 @@
 Persistent
 
 global ExcelCommandPanelGui := ""
+global ExcelCommandUndoStack := []
 
 #HotIf WinActive("ahk_exe EXCEL.EXE")
 ^+e::ShowExcelCommandPanel()
+$^z::UndoExcelCommandPanelAction()
 #HotIf
 
 ShowExcelCommandPanel() {
@@ -32,7 +34,7 @@ ShowExcelCommandPanel() {
     dedupeButton := panel.AddButton("xm y+10 w360 h42", "去重整理")
     dedupeButton.OnEvent("Click", (*) => RunPanelCommand(DedupeAndGroupExcelSelectedColumn))
 
-    panel.AddText("xm y+12 w360 c666666", "面板快捷键：Ctrl+Shift+E。功能只在 Excel 活动窗口内生效。")
+    panel.AddText("xm y+12 w360 c666666", "面板快捷键：Ctrl+Shift+E。脚本操作后可按 Ctrl+Z 撤销。")
 
     closeButton := panel.AddButton("xm y+12 w360 h34", "关闭")
     closeButton.OnEvent("Click", (*) => panel.Hide())
@@ -64,7 +66,7 @@ AddPrefixToExcelSelection() {
 
     try cells := selection.Cells
     catch {
-        MsgBox("当前选区不是单元格区域。请选中一个或多个单元格后再按 Ctrl+Shift+Q。", "Excel 批量添加前缀", "Icon!")
+        MsgBox("当前选区不是单元格区域。请选中一个或多个单元格后再通过面板执行。", "Excel 批量添加前缀", "Icon!")
         return
     }
 
@@ -81,6 +83,7 @@ AddPrefixToExcelSelection() {
     skippedFormula := 0
     failed := 0
 
+    undoAction := CreateUndoAction("添加前缀", xl)
     oldScreenUpdating := xl.ScreenUpdating
     oldEnableEvents := xl.EnableEvents
 
@@ -102,6 +105,7 @@ AddPrefixToExcelSelection() {
                         continue
                     }
 
+                    AddUndoCell(undoAction, cell)
                     cell.Value := prefix . value
                     processed += 1
                 } catch {
@@ -113,6 +117,9 @@ AddPrefixToExcelSelection() {
         xl.ScreenUpdating := oldScreenUpdating
         xl.EnableEvents := oldEnableEvents
     }
+
+    if (processed > 0)
+        PushUndoAction(undoAction)
 
     message := "已添加前缀：" . processed . " 个单元格"
     if (skippedBlank > 0)
@@ -212,10 +219,11 @@ DedupeAndGroupExcelSelectedColumn() {
         . "`n删除重复值：" . duplicateCount . " 个"
         . "`n跳过空白单元格：" . blankCount . " 个"
         . "`n`n写回顺序：10kV -> 110kV -> 其他"
-        . "`n注意：Excel 的撤销记录可能会被清空，脚本不会自动保存文件。"
+        . "`n注意：脚本会记录本次操作，可按 Ctrl+Z 撤销；脚本不会自动保存文件。"
     if (MsgBox(confirmText, "Excel 列去重整理", "OKCancel Icon?") != "OK")
         return
 
+    undoAction := CreateUndoAction("去重整理", xl)
     oldScreenUpdating := xl.ScreenUpdating
     oldEnableEvents := xl.EnableEvents
 
@@ -223,7 +231,9 @@ DedupeAndGroupExcelSelectedColumn() {
         xl.ScreenUpdating := false
         xl.EnableEvents := false
 
-        ws.Range(columnName . "2:" . columnName . lastRow).ClearContents()
+        restoreRange := ws.Range(columnName . "2:" . columnName . lastRow)
+        AddUndoRange(undoAction, restoreRange)
+        restoreRange.ClearContents()
         for index, value in result {
             ws.Cells(index + 1, columnNumber).Value := value
         }
@@ -235,7 +245,98 @@ DedupeAndGroupExcelSelectedColumn() {
         xl.EnableEvents := oldEnableEvents
     }
 
+    PushUndoAction(undoAction)
     MsgBox("已完成 " . columnName . " 列整理。`n10kV：" . group10.Length . " 个`n110kV：" . group110.Length . " 个`n其他：" . groupOther.Length . " 个", "Excel 列去重整理")
+}
+
+UndoExcelCommandPanelAction() {
+    global ExcelCommandUndoStack
+
+    if (ExcelCommandUndoStack.Length = 0) {
+        Send("^z")
+        return
+    }
+
+    action := ExcelCommandUndoStack.Pop()
+    try xl := ComObjActive("Excel.Application")
+    catch {
+        MsgBox("没有找到正在运行的 Excel，无法撤销上一次脚本操作。", "Excel 快捷功能撤销", "Icon!")
+        return
+    }
+
+    oldScreenUpdating := xl.ScreenUpdating
+    oldEnableEvents := xl.EnableEvents
+
+    try {
+        xl.ScreenUpdating := false
+        xl.EnableEvents := false
+
+        for index, item in action["items"] {
+            wb := GetWorkbookByFullName(xl, item["workbook"])
+            if (!IsObject(wb))
+                throw Error("找不到原工作簿：" . item["workbook"])
+
+            ws := wb.Worksheets(item["sheet"])
+            range := ws.Range(item["address"])
+            range.Formula := item["formula"]
+        }
+    } catch as err {
+        MsgBox("撤销失败：" . err.Message, "Excel 快捷功能撤销", "Icon!")
+        return
+    } finally {
+        xl.ScreenUpdating := oldScreenUpdating
+        xl.EnableEvents := oldEnableEvents
+    }
+
+    MsgBox("已撤销：" . action["name"], "Excel 快捷功能撤销")
+}
+
+CreateUndoAction(name, xl) {
+    return Map(
+        "name", name,
+        "createdAt", A_Now,
+        "items", []
+    )
+}
+
+AddUndoCell(action, cell) {
+    AddUndoRange(action, cell)
+}
+
+AddUndoRange(action, range) {
+    workbook := range.Worksheet.Parent.FullName
+    sheet := range.Worksheet.Name
+    address := range.Address(false, false)
+    formula := range.Formula
+
+    action["items"].Push(Map(
+        "workbook", workbook,
+        "sheet", sheet,
+        "address", address,
+        "formula", formula
+    ))
+}
+
+PushUndoAction(action) {
+    global ExcelCommandUndoStack
+
+    if (action["items"].Length = 0)
+        return
+
+    ExcelCommandUndoStack.Push(action)
+    while (ExcelCommandUndoStack.Length > 10) {
+        ExcelCommandUndoStack.RemoveAt(1)
+    }
+}
+
+GetWorkbookByFullName(xl, fullName) {
+    try {
+        for wb in xl.Workbooks {
+            if (wb.FullName = fullName)
+                return wb
+        }
+    }
+    return ""
 }
 
 HasMultipleSelectedColumns(selection, expectedColumn) {
