@@ -38,7 +38,7 @@ ShowAutomationPanel() {
     panel.MarginX := 16
     panel.MarginY := 14
 
-    tabs := panel.AddTab3("x16 y14 w430 h400", ["打开图纸", "表格工具", "批量修改文件", "说明"])
+    tabs := panel.AddTab3("x16 y14 w430 h446", ["打开图纸", "表格工具", "批量修改文件", "说明"])
 
     tabs.UseTab(1)
     if (SelectedDwgPath != "") {
@@ -93,13 +93,16 @@ ShowAutomationPanel() {
     mergeIdenticalButton := panel.AddButton("x34 y274 w390 h38", "合并相同内容并居中")
     mergeIdenticalButton.OnEvent("Click", (*) => RunPanelCommand(MergeIdenticalSpreadsheetCells))
 
-    roundUpButton := panel.AddButton("x34 y320 w190 h34", "数字向上取十位")
+    splitMergedButton := panel.AddButton("x34 y320 w390 h38", "拆分合并单元格并填充")
+    splitMergedButton.OnEvent("Click", (*) => RunPanelCommand(SplitMergedSpreadsheetCellsAndFill))
+
+    roundUpButton := panel.AddButton("x34 y366 w190 h34", "数字向上取十位")
     roundUpButton.OnEvent("Click", (*) => RunPanelCommand(RoundSpreadsheetSelectionUpToTen))
 
-    undoButton := panel.AddButton("x234 y320 w190 h34", "撤销上次表格操作")
+    undoButton := panel.AddButton("x234 y366 w190 h34", "撤销上次表格操作")
     undoButton.OnEvent("Click", (*) => RunPanelCommand(UndoExcelCommandPanelAction))
 
-    panel.AddText("x34 y362 w390 c666666", "Excel 支持 Ctrl+Z；WPS 请使用上方撤销按钮。")
+    panel.AddText("x34 y408 w390 c666666", "Excel 支持 Ctrl+Z；WPS 请使用上方撤销按钮。")
 
     tabs.UseTab(3)
     panel.AddText("x34 y58 w390 c666666", "先在资源管理器或桌面选中文件，再执行下面的批量改名。")
@@ -131,13 +134,13 @@ ShowAutomationPanel() {
     panel.AddText("x34 y174 w390", "为便于迁移，安装脚本会直接启动本项目 src 里的主脚本，不再复制到用户文档目录。")
 
     tabs.UseTab()
-    closeButton := panel.AddButton("x16 y426 w430 h34", "关闭")
+    closeButton := panel.AddButton("x16 y472 w430 h34", "关闭")
     closeButton.OnEvent("Click", (*) => panel.Hide())
     panel.OnEvent("Close", (*) => panel.Hide())
     panel.OnEvent("Escape", (*) => panel.Hide())
 
     AutomationPanelGui := panel
-    panel.Show("w462 h476 Center")
+    panel.Show("w462 h522 Center")
 }
 
 RoundSpreadsheetSelectionUpToTen() {
@@ -251,7 +254,123 @@ IsSpreadsheetNativeNumber(value) {
 RunPanelCommand(callback) {
     global AutomationPanelGui
     try AutomationPanelGui.Hide()
-    callback.Call()
+    try callback.Call()
+    catch as err
+        MsgBox("操作失败：" . err.Message, "自动化工具面板", "Icon!")
+}
+
+SplitMergedSpreadsheetCellsAndFill() {
+    title := "拆分合并单元格并填充"
+    ; 拆分功能优先读取按钮执行时的实时选区，避免面板打开后重新选区仍处理旧范围。
+    context := GetSpreadsheetContext(title, false)
+    if IsObject(context) {
+        try {
+            context["selection"] := context["app"].Selection
+            context["selection"].Cells.Count
+        } catch
+            context := ""
+    }
+    if !IsObject(context)
+        context := GetSpreadsheetSelectionContext(title)
+    if !IsObject(context)
+        return
+
+    app := context["app"]
+    selection := context["selection"]
+    mergeRanges := []
+    seenAddresses := Map()
+
+    try {
+        ; 整列选区包含超过一百万个单元格，不能直接遍历 area.Cells。
+        ; 只扫描选区与 UsedRange 的交集，避免整列选择导致长时间卡顿。
+        usedRange := selection.Worksheet.UsedRange
+        usedFirstRow := usedRange.Row
+        usedLastRow := usedFirstRow + usedRange.Rows.Count - 1
+        usedFirstColumn := usedRange.Column
+        usedLastColumn := usedFirstColumn + usedRange.Columns.Count - 1
+
+        for area in selection.Areas {
+            firstRow := Max(area.Row, usedFirstRow)
+            lastRow := Min(area.Row + area.Rows.Count - 1, usedLastRow)
+            firstColumn := Max(area.Column, usedFirstColumn)
+            lastColumn := Min(area.Column + area.Columns.Count - 1, usedLastColumn)
+            if (firstRow > lastRow || firstColumn > lastColumn)
+                continue
+
+            Loop (lastRow - firstRow + 1) {
+                rowIndex := firstRow + A_Index - 1
+                Loop (lastColumn - firstColumn + 1) {
+                    columnIndex := firstColumn + A_Index - 1
+                    cell := selection.Worksheet.Cells(rowIndex, columnIndex)
+                    if !cell.MergeCells
+                        continue
+
+                    mergeRange := cell.MergeArea
+                    address := mergeRange.Address(false, false)
+                    if seenAddresses.Has(address)
+                        continue
+
+                    seenAddresses[address] := true
+                    mergeRanges.Push(mergeRange)
+                }
+            }
+        }
+    } catch as err {
+        MsgBox("无法读取当前选区中的合并单元格：" . err.Message, title, "Icon!")
+        return
+    }
+
+    if (mergeRanges.Length = 0) {
+        MsgBox("当前选区中没有合并单元格。", title)
+        return
+    }
+
+    undoAction := CreateUndoAction(title, app, context["kind"])
+    try {
+        for mergeRange in mergeRanges
+            AddUndoUnmergeRange(undoAction, mergeRange)
+    } catch as err {
+        MsgBox("无法记录撤销信息：" . err.Message, title, "Icon!")
+        return
+    }
+
+    oldScreenUpdating := GetSpreadsheetProperty(app, "ScreenUpdating", true)
+    oldEnableEvents := GetSpreadsheetProperty(app, "EnableEvents", true)
+    operationError := ""
+
+    try {
+        try app.ScreenUpdating := false
+        try app.EnableEvents := false
+
+        for item in undoAction["items"] {
+            wb := GetWorkbookByFullName(app, item["workbook"])
+            if !IsObject(wb)
+                throw Error("找不到原工作簿：" . item["workbook"])
+
+            ws := wb.Worksheets(item["sheet"])
+            mergeRange := ws.Range(item["address"])
+            mergeRange.UnMerge()
+            item["applied"] := true
+
+            ; 对整个区域一次性写入，避免逐个单元格跨 COM 调用造成卡顿。
+            SetSpreadsheetCellContent(mergeRange, item["fillContent"])
+        }
+    } catch as err {
+        operationError := err.Message
+        try RestoreUndoAction(app, undoAction)
+        catch as rollbackError
+            operationError .= Chr(10) . "回滚失败：" . rollbackError.Message
+    } finally {
+        try app.EnableEvents := oldEnableEvents
+        try app.ScreenUpdating := oldScreenUpdating
+    }
+
+    if (operationError != "") {
+        MsgBox("拆分失败：" . operationError, title, "Icon!")
+        return
+    }
+
+    PushUndoAction(undoAction)
 }
 
 MergeIdenticalSpreadsheetCells() {
@@ -262,55 +381,107 @@ MergeIdenticalSpreadsheetCells() {
 
     xl := context["app"]
     selection := context["selection"]
+    processRange := ""
 
     try {
         if (selection.Areas.Count != 1) {
-            MsgBox("当前选区不连续。请只选择一个连续的单列区域。", title, "Icon!")
-            return
-        }
-        if (selection.Columns.Count != 1) {
-            MsgBox("当前选区跨了多列。请只选择一个连续的单列区域。", title, "Icon!")
+            MsgBox("当前选区不连续。请只选择一个连续的单列或多列区域。", title, "Icon!")
             return
         }
         if (selection.Rows.Count < 2) {
             MsgBox("选区至少需要包含两个单元格。", title)
             return
         }
+
+        usedRange := selection.Worksheet.UsedRange
+        firstRow := Max(selection.Row, usedRange.Row)
+        lastRow := Min(
+            selection.Row + selection.Rows.Count - 1,
+            usedRange.Row + usedRange.Rows.Count - 1
+        )
+        if (firstRow > lastRow) {
+            MsgBox("当前选区内没有可处理的已使用单元格。", title)
+            return
+        }
+        processRange := selection.Worksheet.Range(
+            selection.Worksheet.Cells(firstRow, selection.Column),
+            selection.Worksheet.Cells(
+                lastRow,
+                selection.Column + selection.Columns.Count - 1
+            )
+        )
     } catch {
         MsgBox("当前选区不是可处理的单元格区域。", title, "Icon!")
         return
     }
 
-    entries := []
+    entriesByColumn := []
     try {
-        for cell in selection.Cells {
+        if HasSpreadsheetFormulaCells(processRange) {
+            MsgBox("选区中包含公式单元格。为避免公式丢失，本次操作已取消。", title, "Icon!")
+            return
+        }
+
+        values := processRange.Value2
+        rowCount := processRange.Rows.Count
+        columnCount := processRange.Columns.Count
+        for cell in processRange.Cells {
             if (cell.MergeCells) {
                 MsgBox("选区中包含已经合并的单元格。请先取消合并后再执行。", title, "Icon!")
                 return
             }
-            if (cell.HasFormula) {
-                MsgBox("选区中包含公式单元格。为避免公式丢失，本次操作已取消。", title, "Icon!")
-                return
+        }
+
+        Loop columnCount {
+            relativeColumn := A_Index
+            columnEntries := []
+            Loop rowCount {
+                relativeRow := A_Index
+                value := GetSpreadsheetMatrixValue(
+                    values,
+                    relativeRow,
+                    relativeColumn,
+                    rowCount,
+                    columnCount
+                )
+                columnEntries.Push(Map(
+                    "value", value,
+                    "row", firstRow + relativeRow - 1
+                ))
             }
-            entries.Push(Map("cell", cell, "value", cell.Value2))
+            entriesByColumn.Push(columnEntries)
         }
     } catch as err {
         MsgBox("无法读取选区：" . err.Message, title, "Icon!")
         return
     }
 
-    groups := FindIdenticalSpreadsheetCellGroups(entries)
-    if (groups.Length = 0) {
+    ToolTip("正在读取分页符并处理合并，请稍候……")
+    pageBreakRows := GetHorizontalPageBreakRows(selection.Worksheet, firstRow, lastRow)
+    mergeSpecs := []
+    for relativeColumn, entries in entriesByColumn {
+        groups := FindIdenticalSpreadsheetCellGroups(entries, pageBreakRows)
+        for group in groups {
+            mergeSpecs.Push(Map(
+                "column", selection.Column + relativeColumn - 1,
+                "firstRow", entries[group["start"]]["row"],
+                "lastRow", entries[group["end"]]["row"]
+            ))
+        }
+    }
+    ToolTip()
+    if (mergeSpecs.Length = 0) {
         MsgBox("选区中没有连续且内容完全相同的单元格。", title)
         return
     }
 
     undoAction := CreateUndoAction(title, xl, context["kind"])
     try {
-        for group in groups {
-            firstAddress := entries[group["start"]]["cell"].Address(false, false)
-            lastAddress := entries[group["end"]]["cell"].Address(false, false)
-            mergeRange := selection.Worksheet.Range(firstAddress . ":" . lastAddress)
+        for spec in mergeSpecs {
+            mergeRange := selection.Worksheet.Range(
+                selection.Worksheet.Cells(spec["firstRow"], spec["column"]),
+                selection.Worksheet.Cells(spec["lastRow"], spec["column"])
+            )
             AddUndoMergeRange(undoAction, mergeRange)
         }
     } catch as err {
@@ -359,11 +530,17 @@ MergeIdenticalSpreadsheetCells() {
     PushUndoAction(undoAction)
 }
 
-FindIdenticalSpreadsheetCellGroups(entries) {
+FindIdenticalSpreadsheetCellGroups(entries, pageBreakRows := "") {
     groups := []
     groupStart := 0
 
     for index, entry in entries {
+        ; 分页符位于当前行之前时，强制结束上一段相同内容。
+        if (index > 1 && IsObject(pageBreakRows) && pageBreakRows.Has(entry["row"])) {
+            AddIdenticalSpreadsheetCellGroup(groups, groupStart, index - 1)
+            groupStart := 0
+        }
+
         if IsBlankSpreadsheetValue(entry["value"]) {
             AddIdenticalSpreadsheetCellGroup(groups, groupStart, index - 1)
             groupStart := 0
@@ -383,6 +560,35 @@ FindIdenticalSpreadsheetCellGroups(entries) {
 
     AddIdenticalSpreadsheetCellGroup(groups, groupStart, entries.Length)
     return groups
+}
+
+HasSpreadsheetFormulaCells(range) {
+    try {
+        formulaCells := range.SpecialCells(-4123)
+        return IsObject(formulaCells)
+    } catch {
+        return false
+    }
+}
+
+GetSpreadsheetMatrixValue(values, row, column, rowCount, columnCount) {
+    if (rowCount = 1 && columnCount = 1)
+        return values
+    return values[row, column]
+}
+
+GetHorizontalPageBreakRows(worksheet, firstRow := 1, lastRow := 1048576) {
+    rows := Map()
+    try {
+        for pageBreak in worksheet.HPageBreaks {
+            row := pageBreak.Location.Row
+            if (row >= firstRow && row <= lastRow)
+                rows[row] := true
+        }
+    } catch {
+        ; 某些 WPS 版本可能不公开分页符集合，保持原有合并行为。
+    }
+    return rows
 }
 
 AddIdenticalSpreadsheetCellGroup(groups, startIndex, endIndex) {
@@ -1370,10 +1576,32 @@ RestoreUndoAction(app, action) {
             RestoreMergedRangeUndoItem(ws, item)
             continue
         }
+        if (item.Has("kind") && item["kind"] = "unmergeFill") {
+            RestoreUnmergedRangeUndoItem(ws, item)
+            continue
+        }
 
         range := ws.Range(item["address"])
         range.Formula := item["formula"]
     }
+}
+
+RestoreUnmergedRangeUndoItem(ws, item) {
+    if (!item["applied"])
+        return
+
+    range := ws.Range(item["address"])
+    range.UnMerge()
+
+    for cellState in item["cells"] {
+        cell := ws.Range(cellState["address"])
+        SetSpreadsheetCellContent(cell, cellState["content"])
+    }
+
+    range.Merge()
+    range.HorizontalAlignment := item["horizontalAlignment"]
+    range.VerticalAlignment := item["verticalAlignment"]
+    item["applied"] := false
 }
 
 RestoreMergedRangeUndoItem(ws, item) {
@@ -1803,6 +2031,29 @@ AddUndoMergeRange(action, range) {
         "sheet", range.Worksheet.Name,
         "address", range.Address(false, false),
         "cells", cells,
+        "applied", false
+    )
+    action["items"].Push(item)
+    return item
+}
+
+AddUndoUnmergeRange(action, range) {
+    ; 合并区域只有左上角保留有效内容，撤销时无需逐个保存空白单元格。
+    firstCell := range.Cells(1, 1)
+    cells := [Map(
+        "address", firstCell.Address(false, false),
+        "content", GetSpreadsheetCellContent(firstCell)
+    )]
+
+    item := Map(
+        "kind", "unmergeFill",
+        "workbook", range.Worksheet.Parent.FullName,
+        "sheet", range.Worksheet.Name,
+        "address", range.Address(false, false),
+        "cells", cells,
+        "fillContent", GetSpreadsheetCellContent(firstCell),
+        "horizontalAlignment", range.HorizontalAlignment,
+        "verticalAlignment", range.VerticalAlignment,
         "applied", false
     )
     action["items"].Push(item)
