@@ -2,34 +2,40 @@ $ErrorActionPreference = 'Stop'
 
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $sourceScript = Join-Path $projectRoot 'src\excel-command-panel.ahk'
-$targetDir = 'D:\Users\ys199\Documents\AutoHotkey'
-$targetScript = Join-Path $targetDir 'excel-command-panel.ahk'
 $ahkExe = 'C:\Program Files\AutoHotkey\v2\AutoHotkey64.exe'
 $startupDir = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup'
 $startupLink = Join-Path $startupDir 'excel-command-panel.lnk'
-$oldLinks = @(
+$documentsDir = [Environment]::GetFolderPath('MyDocuments')
+$disabledBackupDir = Join-Path $documentsDir 'AutoHotkey\disabled-startup-backup'
+$oldStartupItems = @(
     (Join-Path $startupDir 'excel-prefix-selected-cells.lnk'),
-    (Join-Path $startupDir 'excel-dedupe-sort-b-column.lnk')
+    (Join-Path $startupDir 'excel-prefix-selected-cells.lnk.disabled'),
+    (Join-Path $startupDir 'excel-dedupe-sort-b-column.lnk'),
+    (Join-Path $startupDir 'excel-dedupe-sort-b-column.lnk.disabled')
 )
 
 if (-not (Test-Path -LiteralPath $ahkExe)) {
     throw "AutoHotkey v2 not found: $ahkExe"
 }
 
-New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
-Copy-Item -LiteralPath $sourceScript -Destination $targetScript -Force
+if (-not (Test-Path -LiteralPath $sourceScript)) {
+    throw "Main script not found: $sourceScript"
+}
+
+New-Item -ItemType Directory -Path $startupDir -Force | Out-Null
+New-Item -ItemType Directory -Path $disabledBackupDir -Force | Out-Null
 
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($startupLink)
 $shortcut.TargetPath = $ahkExe
-$shortcut.Arguments = '"' + $targetScript + '"'
-$shortcut.WorkingDirectory = $targetDir
+$shortcut.Arguments = '"' + $sourceScript + '"'
+$shortcut.WorkingDirectory = $projectRoot
 $shortcut.IconLocation = "$ahkExe,0"
 $shortcut.Save()
 
-foreach ($link in $oldLinks) {
-    if (Test-Path -LiteralPath $link) {
-        Rename-Item -LiteralPath $link -NewName ((Split-Path -Leaf $link) + '.disabled') -Force
+foreach ($item in $oldStartupItems) {
+    if (Test-Path -LiteralPath $item) {
+        Move-Item -LiteralPath $item -Destination (Join-Path $disabledBackupDir (Split-Path -Leaf $item)) -Force
     }
 }
 
@@ -43,9 +49,9 @@ Get-CimInstance Win32_Process -Filter "Name LIKE 'AutoHotkey%'" |
         Stop-Process -Id $_.ProcessId -Force
     }
 
-Start-Process -FilePath $ahkExe -ArgumentList ('"' + $targetScript + '"') -WindowStyle Hidden
+Start-Process -FilePath $ahkExe -ArgumentList ('"' + $sourceScript + '"') -WorkingDirectory $projectRoot -WindowStyle Hidden
 
-Write-Host "Installed Excel command panel:"
-Write-Host "  Script: $targetScript"
+Write-Host "Installed automation panel:"
+Write-Host "  Script: $sourceScript"
 Write-Host "  Startup: $startupLink"
 Write-Host "  Hotkey: Ctrl+Shift+E"
