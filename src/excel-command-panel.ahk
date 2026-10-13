@@ -1,19 +1,43 @@
 #Requires AutoHotkey v2.0
 #SingleInstance Force
 Persistent
+#Include spreadsheet-export.ahk
 
 global AutomationPanelGui := ""
 global AutomationContextHwnd := 0
+global AutomationSelectedFilePaths := []
 global AutomationSpreadsheetSelectionContext := ""
 global ExcelCommandUndoStack := []
 global SelectedDwgPath := ""
 global CopyQExe := "D:\CopyQ\copyq.exe"
+global AaLspPath := "D:\Syncthing\Oracle-Sync\LISP\ZW-auto_lisp\AA整合版本.lsp"
+LogPanelDiagnostic("脚本初始化启动", "PID=" . ProcessExist() . "; ScriptHwnd=" . A_ScriptHwnd . "; Class=" . WinGetClass(A_ScriptHwnd))
+
+LogPanelDiagnostic(eventName, details := "") {
+    static logPath := ""
+    try {
+        if (logPath = "") {
+            logDirectory := EnvGet("LOCALAPPDATA") . "\AutoHotkeyPanel"
+            DirCreate(logDirectory)
+            logPath := logDirectory . "\selection-debug.log"
+        }
+        logLine := FormatTime(A_Now, "yyyy-MM-dd HH:mm:ss") . " [" . eventName . "]"
+        if (details != "")
+            logLine .= "`r`n" . details
+        FileAppend(logLine . "`r`n", logPath, "UTF-8")
+    }
+}
 
 ^+e:: {
-    KeyWait("e")
-    KeyWait("Ctrl")
-    KeyWait("Shift")
-    ShowAutomationPanel()
+    static isOpening := false
+    if isOpening
+        return
+    isOpening := true
+    try {
+        ShowAutomationPanel()
+    } finally {
+        SetTimer(() => isOpening := false, -300)
+    }
 }
 
 #HotIf WinActive("ahk_exe EXCEL.EXE")
@@ -23,10 +47,25 @@ $^z::UndoExcelCommandPanelAction()
 ShowAutomationPanel() {
     global AutomationPanelGui
     global AutomationContextHwnd
+    global AutomationSelectedFilePaths
     global AutomationSpreadsheetSelectionContext
     global SelectedDwgPath
 
     AutomationContextHwnd := WinExist("A")
+    try {
+        contextClass := WinGetClass("ahk_id " . AutomationContextHwnd)
+    } catch {
+        contextClass := "无法读取窗口类名"
+    }
+    LogPanelDiagnostic("面板启动", "contextHwnd=" . AutomationContextHwnd . "; class=" . contextClass)
+    AutomationSelectedFilePaths := []
+    if (contextClass = "CabinetWClass" || contextClass = "ExploreWClass"
+        || contextClass = "Progman" || contextClass = "WorkerW")
+        AutomationSelectedFilePaths := DeduplicateSelectedFilePaths(
+            GetSelectedFilePathsFromClipboard(AutomationContextHwnd)
+        )
+    LogPanelDiagnostic("面板选区快照", "pathCount=" . AutomationSelectedFilePaths.Length
+        . (AutomationSelectedFilePaths.Length ? "`r`n" . JoinLines(AutomationSelectedFilePaths) : "`r`n快照为空"))
     AutomationSpreadsheetSelectionContext := CaptureSpreadsheetSelectionContext(AutomationContextHwnd)
     SelectedDwgPath := GetSelectedDwgPath()
 
@@ -38,7 +77,7 @@ ShowAutomationPanel() {
     panel.MarginX := 16
     panel.MarginY := 14
 
-    tabs := panel.AddTab3("x16 y14 w430 h446", ["打开图纸", "表格工具", "批量修改文件", "说明"])
+    tabs := panel.AddTab3("x16 y14 w430 h446", ["打开图纸", "表格工具", "批量修改文件", "文件处理", "说明"])
 
     tabs.UseTab(1)
     if (SelectedDwgPath != "") {
@@ -64,7 +103,10 @@ ShowAutomationPanel() {
         quickViewButton.Enabled := false
     }
 
-    panel.AddText("x34 y320 w390 c666666", "面板只把当前选中的图纸交给所选软件，不会修改图纸。")
+    reloadLspButton := panel.AddButton("x34 y310 w390 h42", "重新加载 AA整合版本.lsp (中望 CAD)")
+    reloadLspButton.OnEvent("Click", (*) => RunPanelCommand(ReloadZwcadAaLsp))
+
+    panel.AddText("x34 y364 w390 c666666", "说明：打开图纸只转交选中文件；重载脚本会直接通知运行中的中望 CAD 重新加载 AA整合版本.lsp。")
 
     tabs.UseTab(2)
     panel.AddText("x34 y58 w390 c666666", "处理当前 Excel 或 WPS 表格选区。")
@@ -102,7 +144,8 @@ ShowAutomationPanel() {
     undoButton := panel.AddButton("x234 y366 w190 h34", "撤销上次表格操作")
     undoButton.OnEvent("Click", (*) => RunPanelCommand(UndoExcelCommandPanelAction))
 
-    panel.AddText("x34 y408 w390 c666666", "Excel 支持 Ctrl+Z；WPS 请使用上方撤销按钮。")
+    exportButton := panel.AddButton("x34 y408 w390 h34", "导出选区信息（给 AI）")
+    exportButton.OnEvent("Click", (*) => RunPanelCommand(ExportSpreadsheetSelection))
 
     tabs.UseTab(3)
     panel.AddText("x34 y58 w390 c666666", "先在资源管理器或桌面选中文件，再执行下面的批量改名。")
@@ -125,19 +168,37 @@ ShowAutomationPanel() {
     replaceFileTextButton := panel.AddButton("x34 y320 w390 h38", "将 ML 替换为目录")
     replaceFileTextButton.OnEvent("Click", (*) => RunPanelCommand(ReplaceTextInSelectedFileNames))
 
-    panel.AddText("x34 y370 w390 c666666", "改名前会显示预览并要求确认；扩展名保持不变。")
+    replaceCustomFileTextButton := panel.AddButton("x34 y366 w390 h38", "替换文件名中的文字")
+    replaceCustomFileTextButton.OnEvent("Click", (*) => RunPanelCommand(ReplaceCustomTextInSelectedFileNames))
+
+    panel.AddText("x34 y410 w390 c666666", "改名前会显示预览并要求确认；扩展名保持不变。")
 
     tabs.UseTab(4)
+    panel.AddText("x34 y58 w390 c666666", "先在资源管理器或桌面选中文件，再选择对应的文件处理工具。")
+
+    mergePdfButton := panel.AddButton("x34 y90 w390 h38", "合并选中的 PDF")
+    mergePdfButton.OnEvent("Click", (*) => RunPanelCommand(MergeSelectedPdfFiles))
+
+    wordToPdfButton := panel.AddButton("x34 y136 w390 h38", "Word 转 PDF")
+    wordToPdfButton.OnEvent("Click", (*) => RunPanelCommand(ConvertSelectedWordFilesToPdf))
+
+    excelToPdfButton := panel.AddButton("x34 y182 w390 h38", "Excel 转 PDF")
+    excelToPdfButton.OnEvent("Click", (*) => RunPanelCommand(ConvertSelectedExcelFilesToPdf))
+
+    panel.AddText("x34 y236 w390 c666666", "PDF 合并后保存到首个 PDF 所在文件夹；Word、Excel 转换后保存为同目录同名 PDF。Excel 会导出整个工作簿。")
+
+    tabs.UseTab(5)
     panel.AddText("x34 y58 w390", "快捷键：Ctrl+Shift+E")
     panel.AddText("x34 y90 w390", "选中 DWG 后打开面板，可选择 AutoCAD、中望 CAD 或 CAD快速看图。")
     panel.AddText("x34 y132 w390", "图纸和文件工具均支持资源管理器与桌面选区。")
     panel.AddText("x34 y174 w390", "为便于迁移，安装脚本会直接启动本项目 src 里的主脚本，不再复制到用户文档目录。")
 
     tabs.UseTab()
+    panelCreatedTime := A_TickCount
     closeButton := panel.AddButton("x16 y472 w430 h34", "关闭")
     closeButton.OnEvent("Click", (*) => panel.Hide())
     panel.OnEvent("Close", (*) => panel.Hide())
-    panel.OnEvent("Escape", (*) => panel.Hide())
+    panel.OnEvent("Escape", (*) => (A_TickCount - panelCreatedTime > 400) ? panel.Hide() : 0)
 
     AutomationPanelGui := panel
     panel.Show("w462 h522 Center")
@@ -259,35 +320,64 @@ RunPanelCommand(callback) {
         MsgBox("操作失败：" . err.Message, "自动化工具面板", "Icon!")
 }
 
-SplitMergedSpreadsheetCellsAndFill() {
+SplitMergedSpreadsheetCellsAndFill(explicitContext := "") {
     title := "拆分合并单元格并填充"
-    ; 拆分功能优先读取按钮执行时的实时选区，避免面板打开后重新选区仍处理旧范围。
-    context := GetSpreadsheetContext(title, false)
-    if IsObject(context) {
-        try {
-            context["selection"] := context["app"].Selection
-            context["selection"].Cells.Count
-        } catch
-            context := ""
+    context := ""
+    if IsObject(explicitContext) {
+        context := explicitContext
+    } else {
+        ; 拆分功能优先读取按钮执行时的实时选区，避免面板打开后重新选区仍处理旧范围。
+        context := GetSpreadsheetContext(title, false)
+        if IsObject(context) {
+            try {
+                context["selection"] := context["app"].Selection
+                context["selection"].Cells.Count
+            } catch
+                context := ""
+        }
+        if !IsObject(context)
+            context := GetSpreadsheetSelectionContext(title)
     }
-    if !IsObject(context)
-        context := GetSpreadsheetSelectionContext(title)
     if !IsObject(context)
         return
 
     app := context["app"]
     selection := context["selection"]
-    mergeRanges := []
+    kind := context.Has("kind") ? context["kind"] : (context.Has("name") ? context["name"] : "excel")
+    isSilent := (context.Has("silent") && context["silent"])
+    undoAction := CreateUndoAction(title, app, kind)
     seenAddresses := Map()
+    areaInfos := []
+
+    ; 全局加速与环境保护：在扫描和操作前关闭屏幕刷新、事件与警告，切换为手动计算
+    oldScreenUpdating := GetSpreadsheetProperty(app, "ScreenUpdating", true)
+    oldEnableEvents := GetSpreadsheetProperty(app, "EnableEvents", true)
+    oldDisplayAlerts := GetSpreadsheetProperty(app, "DisplayAlerts", true)
+    oldCalculation := GetSpreadsheetProperty(app, "Calculation", -4105)
+    oldDisplayPageBreaks := false
+    oldView := 1
 
     try {
+        try app.ScreenUpdating := false
+        try app.EnableEvents := false
+        try app.DisplayAlerts := false
+        try app.Calculation := -4135 ; xlCalculationManual
+
         ; 整列选区包含超过一百万个单元格，不能直接遍历 area.Cells。
         ; 只扫描选区与 UsedRange 的交集，避免整列选择导致长时间卡顿。
-        usedRange := selection.Worksheet.UsedRange
+        worksheet := selection.Worksheet
+        try oldDisplayPageBreaks := worksheet.DisplayPageBreaks
+        try worksheet.DisplayPageBreaks := false
+        try oldView := app.ActiveWindow.View
+        try app.ActiveWindow.View := 1 ; xlNormalView
+
+        usedRange := worksheet.UsedRange
         usedFirstRow := usedRange.Row
         usedLastRow := usedFirstRow + usedRange.Rows.Count - 1
         usedFirstColumn := usedRange.Column
         usedLastColumn := usedFirstColumn + usedRange.Columns.Count - 1
+        wbFullName := worksheet.Parent.FullName
+        wsName := worksheet.Name
 
         for area in selection.Areas {
             firstRow := Max(area.Row, usedFirstRow)
@@ -297,63 +387,259 @@ SplitMergedSpreadsheetCellsAndFill() {
             if (firstRow > lastRow || firstColumn > lastColumn)
                 continue
 
-            Loop (lastRow - firstRow + 1) {
-                rowIndex := firstRow + A_Index - 1
-                Loop (lastColumn - firstColumn + 1) {
-                    columnIndex := firstColumn + A_Index - 1
-                    cell := selection.Worksheet.Cells(rowIndex, columnIndex)
-                    if !cell.MergeCells
-                        continue
+            areaRange := worksheet.Range(
+                worksheet.Cells(firstRow, firstColumn),
+                worksheet.Cells(lastRow, lastColumn)
+            )
+            if (areaRange.MergeCells == false)
+                continue
 
-                    mergeRange := cell.MergeArea
-                    address := mergeRange.Address(false, false)
-                    if seenAddresses.Has(address)
-                        continue
+            areaRowCount := lastRow - firstRow + 1
+            areaColCount := lastColumn - firstColumn + 1
+            areaValues := areaRange.Value2
+            areaItems := []
 
-                    seenAddresses[address] := true
-                    mergeRanges.Push(mergeRange)
+            ; 优先尝试极速纯内存 XML 解析通道（将 2000+ 次 COM IPC 骤降至 1 次）
+            hasParsedXml := false
+            try {
+                xmlStr := areaRange.Value(11) ; xlRangeValueXMLSpreadsheet
+                if (Type(xmlStr) = "String" && InStr(xmlStr, "<Table")) {
+                    curRelRow := 0
+                    curRelCol := 0
+                    inTable := false
+
+                    Loop Parse, xmlStr, "`n", "`r" {
+                        line := A_LoopField
+                        if (!inTable) {
+                            if InStr(line, "<Table")
+                                inTable := true
+                            continue
+                        }
+                        if InStr(line, "</Table>")
+                            break
+
+                        ; 匹配行标签 <Row
+                        if InStr(line, "<Row") {
+                            if RegExMatch(line, 'i)ss:Index="(\d+)"', &mRow)
+                                curRelRow := Integer(mRow[1])
+                            else
+                                curRelRow += 1
+                            curRelCol := 0
+                            continue
+                        }
+
+                        ; 匹配单元格标签 <Cell
+                        if InStr(line, "<Cell") {
+                            if RegExMatch(line, 'i)ss:Index="(\d+)"', &mCol)
+                                curRelCol := Integer(mCol[1])
+                            else
+                                curRelCol += 1
+
+                            hasMergeDown := RegExMatch(line, 'i)ss:MergeDown="(\d+)"', &downM)
+                            hasMergeAcross := RegExMatch(line, 'i)ss:MergeAcross="(\d+)"', &acrossM)
+
+                            if (hasMergeDown || hasMergeAcross) {
+                                downCount := hasMergeDown ? Integer(downM[1]) : 0
+                                acrossCount := hasMergeAcross ? Integer(acrossM[1]) : 0
+                                mRowCount := downCount + 1
+                                mColCount := acrossCount + 1
+
+                                mStartRow := firstRow + curRelRow - 1
+                                mEndRow := mStartRow + mRowCount - 1
+                                mStartCol := firstColumn + curRelCol - 1
+                                mEndCol := mStartCol + mColCount - 1
+
+                                startColLetter := GetSpreadsheetColumnLetter(mStartCol)
+                                endColLetter := (mColCount = 1) ? startColLetter : GetSpreadsheetColumnLetter(mEndCol)
+                                rangeAddr := (mColCount = 1)
+                                    ? startColLetter . mStartRow . ":" . startColLetter . mEndRow
+                                    : startColLetter . mStartRow . ":" . endColLetter . mEndRow
+                                firstAddr := startColLetter . mStartRow
+
+                                if !seenAddresses.Has(rangeAddr) {
+                                    seenAddresses[rangeAddr] := true
+                                    firstVal := GetSpreadsheetMatrixValue(areaValues, curRelRow, curRelCol, areaRowCount, areaColCount)
+
+                                    item := Map(
+                                        "kind", "unmergeFill",
+                                        "workbook", wbFullName,
+                                        "sheet", wsName,
+                                        "address", rangeAddr,
+                                        "cells", [Map("address", firstAddr, "content", firstVal)],
+                                        "fillContent", firstVal,
+                                        "horizontalAlignment", "",
+                                        "verticalAlignment", "",
+                                        "applied", false
+                                    )
+                                    undoAction["items"].Push(item)
+                                    areaItems.Push(item)
+
+                                    fillRStart := curRelRow
+                                    fillREnd := Min(curRelRow + mRowCount - 1, areaRowCount)
+                                    fillCStart := curRelCol
+                                    fillCEnd := Min(curRelCol + mColCount - 1, areaColCount)
+
+                                    Loop (fillCEnd - fillCStart + 1) {
+                                        fc := fillCStart + A_Index - 1
+                                        Loop (fillREnd - fillRStart + 1) {
+                                            fr := fillRStart + A_Index - 1
+                                            if (areaRowCount = 1 && areaColCount = 1)
+                                                areaValues := firstVal
+                                            else
+                                                areaValues[fr, fc] := firstVal
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    hasParsedXml := true
+                }
+            }
+
+            ; 兜底回退通道（例如 WPS 不支持 Value(11) 时）：高剪枝 COM 扫描通道
+            if (!hasParsedXml) {
+                Loop areaColCount {
+                relCol := A_Index
+                columnIndex := firstColumn + relCol - 1
+                colRange := worksheet.Range(
+                    worksheet.Cells(firstRow, columnIndex),
+                    worksheet.Cells(lastRow, columnIndex)
+                )
+                if (colRange.MergeCells == false)
+                    continue
+
+                colLetter := GetSpreadsheetColumnLetter(columnIndex)
+
+                ; 行指针跨步跳跃：结合内存 SafeArray 预筛与极简 COM 属性查询
+                rowIndex := firstRow
+                while (rowIndex <= lastRow) {
+                    relR := rowIndex - firstRow + 1
+
+                    ; 剪枝 1：利用内存 SafeArray，若当前单元格与下一单元格均非空，在 Excel 中绝对不可能跨行合并，直接跳过 COM 查询
+                    if (relR < areaRowCount) {
+                        curV := (areaRowCount = 1 && areaColCount = 1) ? areaValues : areaValues[relR, relCol]
+                        nextV := (areaRowCount = 1 && areaColCount = 1) ? areaValues : areaValues[relR + 1, relCol]
+                        if (curV != "" && nextV != "") {
+                            ; 两个非空值绝不可能跨行合并。仅当多列选区且右侧为空时才可能跨列合并
+                            if (areaColCount == 1 || (relCol < areaColCount && areaValues[relR, relCol + 1] != "")) {
+                                rowIndex += 1
+                                continue
+                            }
+                        }
+                    }
+
+                    cell := worksheet.Cells(rowIndex, columnIndex)
+                    if (cell.MergeCells) {
+                        ; 剪枝 2：一步链式读取 Rows.Count，杜绝多余 COM 对象赋值与 Columns.Count 查询
+                        mRowCount := cell.MergeArea.Rows.Count
+                        mColCount := 1
+                        if (areaColCount > 1 && relCol < areaColCount && areaValues[relR, relCol + 1] == "") {
+                            try mColCount := cell.MergeArea.Columns.Count
+                        }
+                        mStartRow := rowIndex
+                        mEndRow := mStartRow + mRowCount - 1
+                        mStartCol := columnIndex
+                        mEndCol := mStartCol + mColCount - 1
+
+                        ; 数学坐标生成地址，杜绝查询 mergeRange.Address 等属性
+                        startColLetter := colLetter
+                        endColLetter := (mColCount = 1) ? colLetter : GetSpreadsheetColumnLetter(mEndCol)
+                        rangeAddr := (mColCount = 1)
+                            ? colLetter . mStartRow . ":" . colLetter . mEndRow
+                            : startColLetter . mStartRow . ":" . endColLetter . mEndRow
+                        firstAddr := startColLetter . mStartRow
+
+                        if !seenAddresses.Has(rangeAddr) {
+                            seenAddresses[rangeAddr] := true
+
+                            ; 从内存 SafeArray 中获取首单元格值
+                            relC := relCol
+                            firstVal := GetSpreadsheetMatrixValue(areaValues, relR, relC, areaRowCount, areaColCount)
+
+                            ; 构造撤销项
+                            item := Map(
+                                "kind", "unmergeFill",
+                                "workbook", wbFullName,
+                                "sheet", wsName,
+                                "address", rangeAddr,
+                                "cells", [Map("address", firstAddr, "content", firstVal)],
+                                "fillContent", firstVal,
+                                "horizontalAlignment", "",
+                                "verticalAlignment", "",
+                                "applied", false
+                            )
+                            undoAction["items"].Push(item)
+                            areaItems.Push(item)
+
+                            ; 在内存 SafeArray 中向下填充合并块所覆盖的所有单元格
+                            fillRStart := Max(relR, 1)
+                            fillREnd := Min(relR + mRowCount - 1, areaRowCount)
+                            fillCStart := Max(relC, 1)
+                            fillCEnd := Min(relC + mColCount - 1, areaColCount)
+
+                            Loop (fillCEnd - fillCStart + 1) {
+                                fc := fillCStart + A_Index - 1
+                                Loop (fillREnd - fillRStart + 1) {
+                                    fr := fillRStart + A_Index - 1
+                                    if (areaRowCount = 1 && areaColCount = 1)
+                                        areaValues := firstVal
+                                    else
+                                        areaValues[fr, fc] := firstVal
+                                }
+                            }
+                        }
+
+                        rowIndex := mStartRow + mRowCount
+                        continue
+                    }
+                    rowIndex += 1
                 }
             }
         }
+
+        if (areaItems.Length > 0) {
+                areaInfos.Push(Map(
+                    "range", areaRange,
+                    "values", areaValues,
+                    "items", areaItems
+                ))
+            }
+        }
     } catch as err {
+        try worksheet.DisplayPageBreaks := oldDisplayPageBreaks
+        try app.ActiveWindow.View := oldView
+        try app.Calculation := oldCalculation
+        try app.DisplayAlerts := oldDisplayAlerts
+        try app.EnableEvents := oldEnableEvents
+        try app.ScreenUpdating := oldScreenUpdating
+        if (isSilent)
+            throw Error("无法读取当前选区中的合并单元格：" . err.Message)
         MsgBox("无法读取当前选区中的合并单元格：" . err.Message, title, "Icon!")
         return
     }
 
-    if (mergeRanges.Length = 0) {
+    if (undoAction["items"].Length = 0) {
+        try worksheet.DisplayPageBreaks := oldDisplayPageBreaks
+        try app.ActiveWindow.View := oldView
+        try app.Calculation := oldCalculation
+        try app.DisplayAlerts := oldDisplayAlerts
+        try app.EnableEvents := oldEnableEvents
+        try app.ScreenUpdating := oldScreenUpdating
+        if (isSilent)
+            return ""
         MsgBox("当前选区中没有合并单元格。", title)
         return
     }
 
-    undoAction := CreateUndoAction(title, app, context["kind"])
-    try {
-        for mergeRange in mergeRanges
-            AddUndoUnmergeRange(undoAction, mergeRange)
-    } catch as err {
-        MsgBox("无法记录撤销信息：" . err.Message, title, "Icon!")
-        return
-    }
-
-    oldScreenUpdating := GetSpreadsheetProperty(app, "ScreenUpdating", true)
-    oldEnableEvents := GetSpreadsheetProperty(app, "EnableEvents", true)
     operationError := ""
-
     try {
-        try app.ScreenUpdating := false
-        try app.EnableEvents := false
-
-        for item in undoAction["items"] {
-            wb := GetWorkbookByFullName(app, item["workbook"])
-            if !IsObject(wb)
-                throw Error("找不到原工作簿：" . item["workbook"])
-
-            ws := wb.Worksheets(item["sheet"])
-            mergeRange := ws.Range(item["address"])
-            mergeRange.UnMerge()
-            item["applied"] := true
-
-            ; 对整个区域一次性写入，避免逐个单元格跨 COM 调用造成卡顿。
-            SetSpreadsheetCellContent(mergeRange, item["fillContent"])
+        ; 拆分与填充：整块 UnMerge 与 SafeArray 批量写回，彻底消除逐个单元格 COM IPC
+        for info in areaInfos {
+            info["range"].UnMerge()
+            info["range"].Value2 := info["values"]
+            for item in info["items"]
+                item["applied"] := true
         }
     } catch as err {
         operationError := err.Message
@@ -361,77 +647,121 @@ SplitMergedSpreadsheetCellsAndFill() {
         catch as rollbackError
             operationError .= Chr(10) . "回滚失败：" . rollbackError.Message
     } finally {
+        try worksheet.DisplayPageBreaks := oldDisplayPageBreaks
+        try app.ActiveWindow.View := oldView
+        try app.Calculation := oldCalculation
+        try app.DisplayAlerts := oldDisplayAlerts
         try app.EnableEvents := oldEnableEvents
         try app.ScreenUpdating := oldScreenUpdating
     }
 
     if (operationError != "") {
+        if (isSilent)
+            throw Error("拆分失败：" . operationError)
         MsgBox("拆分失败：" . operationError, title, "Icon!")
         return
     }
 
     PushUndoAction(undoAction)
+    return undoAction
 }
 
-MergeIdenticalSpreadsheetCells() {
+
+MergeIdenticalSpreadsheetCells(explicitContext := "") {
     title := "合并相同内容并居中"
-    context := GetSpreadsheetSelectionContext(title)
+    context := ""
+    if IsObject(explicitContext) {
+        context := explicitContext
+    } else {
+        context := GetSpreadsheetSelectionContext(title)
+    }
     if !IsObject(context)
         return
 
     xl := context["app"]
     selection := context["selection"]
+    kind := context.Has("kind") ? context["kind"] : (context.Has("name") ? context["name"] : "excel")
+    isSilent := (context.Has("silent") && context["silent"])
     processRange := ""
 
     try {
         if (selection.Areas.Count != 1) {
+            if (isSilent)
+                throw Error("当前选区不连续。请只选择一个连续的单列或多列区域。")
             MsgBox("当前选区不连续。请只选择一个连续的单列或多列区域。", title, "Icon!")
             return
         }
         if (selection.Rows.Count < 2) {
+            if (isSilent)
+                throw Error("选区至少需要包含两个单元格。")
             MsgBox("选区至少需要包含两个单元格。", title)
             return
         }
 
-        usedRange := selection.Worksheet.UsedRange
+        worksheet := selection.Worksheet
+        usedRange := worksheet.UsedRange
         firstRow := Max(selection.Row, usedRange.Row)
         lastRow := Min(
             selection.Row + selection.Rows.Count - 1,
             usedRange.Row + usedRange.Rows.Count - 1
         )
         if (firstRow > lastRow) {
+            if (isSilent)
+                throw Error("当前选区内没有可处理的已使用单元格。")
             MsgBox("当前选区内没有可处理的已使用单元格。", title)
             return
         }
-        processRange := selection.Worksheet.Range(
-            selection.Worksheet.Cells(firstRow, selection.Column),
-            selection.Worksheet.Cells(
+        processRange := worksheet.Range(
+            worksheet.Cells(firstRow, selection.Column),
+            worksheet.Cells(
                 lastRow,
                 selection.Column + selection.Columns.Count - 1
             )
         )
-    } catch {
+    } catch as err {
+        if (isSilent)
+            throw Error("当前选区不是可处理的单元格区域：" . err.Message)
         MsgBox("当前选区不是可处理的单元格区域。", title, "Icon!")
         return
     }
 
-    entriesByColumn := []
+    ; 全局加速与环境优化包裹
+    oldScreenUpdating := GetSpreadsheetProperty(xl, "ScreenUpdating", true)
+    oldEnableEvents := GetSpreadsheetProperty(xl, "EnableEvents", true)
+    oldDisplayAlerts := GetSpreadsheetProperty(xl, "DisplayAlerts", true)
+    oldCalculation := GetSpreadsheetProperty(xl, "Calculation", -4105)
+    oldDisplayPageBreaks := false
+    oldView := 1
+    try oldDisplayPageBreaks := worksheet.DisplayPageBreaks
+    try oldView := xl.ActiveWindow.View
+
     try {
+        try xl.ScreenUpdating := false
+        try xl.EnableEvents := false
+        try xl.DisplayAlerts := false
+        try xl.Calculation := -4135 ; xlCalculationManual
+
+        ; 公式检测拦截
         if HasSpreadsheetFormulaCells(processRange) {
+            if (isSilent)
+                throw Error("选区中包含公式单元格。为避免公式丢失，本次操作已取消。")
             MsgBox("选区中包含公式单元格。为避免公式丢失，本次操作已取消。", title, "Icon!")
+            return
+        }
+
+        ; 前置合并单元格 O(1) 预检：processRange.MergeCells != false 表示区域内存在合并单元格
+        if (processRange.MergeCells != false) {
+            if (isSilent)
+                throw Error("选区中包含已经合并的单元格。请先取消合并后再执行。")
+            MsgBox("选区中包含已经合并的单元格。请先取消合并后再执行。", title, "Icon!")
             return
         }
 
         values := processRange.Value2
         rowCount := processRange.Rows.Count
         columnCount := processRange.Columns.Count
-        for cell in processRange.Cells {
-            if (cell.MergeCells) {
-                MsgBox("选区中包含已经合并的单元格。请先取消合并后再执行。", title, "Icon!")
-                return
-            }
-        }
 
+        entriesByColumn := []
         Loop columnCount {
             relativeColumn := A_Index
             columnEntries := []
@@ -451,84 +781,131 @@ MergeIdenticalSpreadsheetCells() {
             }
             entriesByColumn.Push(columnEntries)
         }
-    } catch as err {
-        MsgBox("无法读取选区：" . err.Message, title, "Icon!")
-        return
-    }
 
-    ToolTip("正在读取分页符并处理合并，请稍候……")
-    pageBreakRows := GetHorizontalPageBreakRows(selection.Worksheet, firstRow, lastRow)
-    mergeSpecs := []
-    for relativeColumn, entries in entriesByColumn {
-        groups := FindIdenticalSpreadsheetCellGroups(entries, pageBreakRows)
-        for group in groups {
-            mergeSpecs.Push(Map(
-                "column", selection.Column + relativeColumn - 1,
-                "firstRow", entries[group["start"]]["row"],
-                "lastRow", entries[group["end"]]["row"]
-            ))
+        pageBreakRows := GetHorizontalPageBreakRows(worksheet, firstRow, lastRow)
+
+        ; 抑制分页符实时重算与视图模式损耗：临时关闭 DisplayPageBreaks 与切换普通视图
+        try worksheet.DisplayPageBreaks := false
+        try xl.ActiveWindow.View := 1 ; xlNormalView
+
+        mergeSpecs := []
+        for relativeColumn, entries in entriesByColumn {
+            groups := FindIdenticalSpreadsheetCellGroups(entries, pageBreakRows)
+            colNum := selection.Column + relativeColumn - 1
+            colLetter := GetSpreadsheetColumnLetter(colNum)
+            for group in groups {
+                gStartRow := entries[group["start"]]["row"]
+                gEndRow := entries[group["end"]]["row"]
+                gVal := entries[group["start"]]["value"]
+                mergeSpecs.Push(Map(
+                    "column", colNum,
+                    "colLetter", colLetter,
+                    "firstRow", gStartRow,
+                    "lastRow", gEndRow,
+                    "value", gVal
+                ))
+            }
         }
-    }
-    ToolTip()
-    if (mergeSpecs.Length = 0) {
-        MsgBox("选区中没有连续且内容完全相同的单元格。", title)
-        return
-    }
 
-    undoAction := CreateUndoAction(title, xl, context["kind"])
-    try {
+        if (mergeSpecs.Length = 0) {
+            if (isSilent)
+                throw Error("选区中没有连续且内容完全相同的单元格。")
+            MsgBox("选区中没有连续且内容完全相同的单元格。", title)
+            return
+        }
+
+        undoAction := CreateUndoAction(title, xl, kind)
+        wbFullName := worksheet.Parent.FullName
+        wsName := worksheet.Name
+
+        ; 纯内存构建撤销信息，0 次 COM 属性往返查询
         for spec in mergeSpecs {
-            mergeRange := selection.Worksheet.Range(
-                selection.Worksheet.Cells(spec["firstRow"], spec["column"]),
-                selection.Worksheet.Cells(spec["lastRow"], spec["column"])
+            colLetter := spec["colLetter"]
+            startR := spec["firstRow"]
+            endR := spec["lastRow"]
+            val := spec["value"]
+            rangeAddr := colLetter . startR . ":" . colLetter . endR
+
+            cells := []
+            Loop (endR - startR + 1) {
+                cellR := startR + A_Index - 1
+                cells.Push(Map(
+                    "address", colLetter . cellR,
+                    "content", val,
+                    "horizontalAlignment", "",
+                    "verticalAlignment", ""
+                ))
+            }
+
+            item := Map(
+                "kind", "merge",
+                "workbook", wbFullName,
+                "sheet", wsName,
+                "address", rangeAddr,
+                "cells", cells,
+                "applied", false
             )
-            AddUndoMergeRange(undoAction, mergeRange)
+            undoAction["items"].Push(item)
         }
-    } catch as err {
-        MsgBox("无法记录撤销信息：" . err.Message, title, "Icon!")
-        return
-    }
 
-    oldScreenUpdating := GetSpreadsheetProperty(xl, "ScreenUpdating", true)
-    oldEnableEvents := GetSpreadsheetProperty(xl, "EnableEvents", true)
-    oldDisplayAlerts := GetSpreadsheetProperty(xl, "DisplayAlerts", true)
-    mergeError := ""
+        ; 执行合并前对整个选区一次性广播设置居中对齐，消除后续循环内对各合并块的重复对齐调用
+        processRange.HorizontalAlignment := -4108
+        processRange.VerticalAlignment := -4108
 
-    try {
-        try xl.ScreenUpdating := false
-        try xl.EnableEvents := false
-        try xl.DisplayAlerts := false
-
-        for item in undoAction["items"] {
-            wb := GetWorkbookByFullName(xl, item["workbook"])
-            if !IsObject(wb)
-                throw Error("找不到原工作簿：" . item["workbook"])
-
-            ws := wb.Worksheets(item["sheet"])
-            mergeRange := ws.Range(item["address"])
-            mergeRange.Merge()
-            item["applied"] := true
-            mergeRange.HorizontalAlignment := -4108
-            mergeRange.VerticalAlignment := -4108
+        ; 批量执行合并：分批使用逗号分隔 Range 字符串调用 Merge()，从 806 次 COM IPC 压缩至 ~35 次
+        mergeError := ""
+        try {
+            currentBatch := ""
+            for item in undoAction["items"] {
+                item["applied"] := true
+                addr := item["address"]
+                if (currentBatch = "") {
+                    currentBatch := addr
+                } else if (StrLen(currentBatch) + 1 + StrLen(addr) <= 240) {
+                    currentBatch .= "," . addr
+                } else {
+                    worksheet.Range(currentBatch).Merge()
+                    currentBatch := addr
+                }
+            }
+            if (currentBatch != "")
+                worksheet.Range(currentBatch).Merge()
+        } catch as err {
+            mergeError := err.Message
+            try RestoreUndoAction(xl, undoAction)
+            catch as rollbackError
+                mergeError .= Chr(10) . "回滚失败：" . rollbackError.Message
         }
-    } catch as err {
-        mergeError := err.Message
-        try RestoreUndoAction(xl, undoAction)
-        catch as rollbackError
-            mergeError .= Chr(10) . "回滚失败：" . rollbackError.Message
+
+        if (mergeError != "") {
+            if (isSilent)
+                throw Error("合并失败：" . mergeError)
+            MsgBox("合并失败：" . mergeError, title, "Icon!")
+            return
+        }
+
+        PushUndoAction(undoAction)
+        return undoAction
     } finally {
+        try worksheet.DisplayPageBreaks := oldDisplayPageBreaks
+        try xl.ActiveWindow.View := oldView
+        try xl.Calculation := oldCalculation
         try xl.DisplayAlerts := oldDisplayAlerts
         try xl.EnableEvents := oldEnableEvents
         try xl.ScreenUpdating := oldScreenUpdating
     }
-
-    if (mergeError != "") {
-        MsgBox("合并失败：" . mergeError, title, "Icon!")
-        return
-    }
-
-    PushUndoAction(undoAction)
 }
+
+GetSpreadsheetColumnLetter(columnNumber) {
+    columnLetter := ""
+    while (columnNumber > 0) {
+        remainder := Mod(columnNumber - 1, 26)
+        columnLetter := Chr(65 + remainder) . columnLetter
+        columnNumber := (columnNumber - remainder - 1) // 26
+    }
+    return columnLetter
+}
+
 
 FindIdenticalSpreadsheetCellGroups(entries, pageBreakRows := "") {
     groups := []
@@ -579,14 +956,46 @@ GetSpreadsheetMatrixValue(values, row, column, rowCount, columnCount) {
 
 GetHorizontalPageBreakRows(worksheet, firstRow := 1, lastRow := 1048576) {
     rows := Map()
+    oldPageBreaks := false
+    oldView := 1
+    hasChangedView := false
     try {
-        for pageBreak in worksheet.HPageBreaks {
-            row := pageBreak.Location.Row
-            if (row >= firstRow && row <= lastRow)
-                rows[row] := true
+        try oldPageBreaks := worksheet.DisplayPageBreaks
+        try oldView := worksheet.Application.ActiveWindow.View
+        try worksheet.DisplayPageBreaks := true
+        hbreaks := worksheet.HPageBreaks
+        breakCount := hbreaks.Count
+        Loop breakCount {
+            try {
+                pb := hbreaks.Item(A_Index)
+                locRow := pb.Location.Row
+                if (locRow > lastRow)
+                    break
+                if (locRow >= firstRow && locRow <= lastRow)
+                    rows[locRow] := true
+            } catch {
+                if (!hasChangedView) {
+                    try {
+                        worksheet.Application.ActiveWindow.View := 2
+                        hasChangedView := true
+                        pb := hbreaks.Item(A_Index)
+                        locRow := pb.Location.Row
+                        if (locRow >= firstRow && locRow <= lastRow)
+                            rows[locRow] := true
+                    } catch {
+                        break
+                    }
+                } else {
+                    break
+                }
+            }
         }
     } catch {
         ; 某些 WPS 版本可能不公开分页符集合，保持原有合并行为。
+    } finally {
+        if (hasChangedView)
+            try worksheet.Application.ActiveWindow.View := oldView
+        try worksheet.DisplayPageBreaks := oldPageBreaks
     }
     return rows
 }
@@ -619,19 +1028,9 @@ SpreadsheetValuesExactlyEqual(left, right) {
 }
 
 GetSelectedDwgPath() {
-    global AutomationContextHwnd
+    global AutomationSelectedFilePaths
 
-    hwnd := AutomationContextHwnd
-    if (!hwnd)
-        return ""
-
-    className := WinGetClass("ahk_id " . hwnd)
-    if (className != "CabinetWClass" && className != "ExploreWClass"
-        && className != "Progman" && className != "WorkerW")
-        return ""
-
-    files := GetSelectedFilePathsFromClipboard(hwnd)
-    for _, filePath in files {
+    for _, filePath in AutomationSelectedFilePaths {
         if DirExist(filePath)
             continue
         SplitPath(filePath, , , &extension)
@@ -648,10 +1047,19 @@ GetSelectedFilePathsFromClipboard(hwnd) {
     hasCopyQ := FileExist(CopyQExe) && ProcessExist("copyq.exe")
     copyQDisabled := false
     savedClipboard := ClipboardAll()
+    contextClass := "unknown"
+    try contextClass := WinGetClass("ahk_id " . hwnd)
+    LogPanelDiagnostic("读取选区开始", "hwnd=" . hwnd . "; activeHwnd=" . WinExist("A") . "; class=" . contextClass)
 
     try {
-        if (WinExist("A") != hwnd)
+        if (WinExist("A") != hwnd) {
             WinActivate("ahk_id " . hwnd)
+            LogPanelDiagnostic("激活选区窗口", "afterActivateHwnd=" . WinExist("A"))
+        }
+        if (WinExist("A") != hwnd && !WinWaitActive("ahk_id " . hwnd, , 2)) {
+            LogPanelDiagnostic("选区窗口激活失败", "targetHwnd=" . hwnd . "; activeHwnd=" . WinExist("A"))
+            return selected
+        }
 
         if hasCopyQ {
             RunWait('"' . CopyQExe . '" disable', , "Hide")
@@ -660,19 +1068,55 @@ GetSelectedFilePathsFromClipboard(hwnd) {
 
         A_Clipboard := ""
         Send("^c")
-        if ClipWait(0.6, 1) {
-            for line in StrSplit(A_Clipboard, Chr(10), Chr(13)) {
-                filePath := Trim(line)
-                if (filePath != "" && FileExist(filePath))
-                    selected.Push(filePath)
-            }
-        }
+        clipReady := ClipWait(1, 1)
+        if clipReady
+            selected := GetClipboardFileDropPaths()
+        LogPanelDiagnostic("读取剪贴板选区结束", "clipReady=" . clipReady . "; fileCount=" . selected.Length
+            . (selected.Length ? "`r`n" . JoinLines(selected) : "`r`nCF_HDROP为空或剪贴板等待超时"))
     } finally {
         A_Clipboard := savedClipboard
         if copyQDisabled
             RunWait('"' . CopyQExe . '" enable', , "Hide")
+        LogPanelDiagnostic("选区读取清理", "clipboardRestored=1; copyQReenabled=" . copyQDisabled)
     }
 
+    return selected
+}
+
+GetClipboardFileDropPaths() {
+    selected := []
+    if !DllCall("OpenClipboard", "Ptr", 0) {
+        LogPanelDiagnostic("CF_HDROP读取失败", "OpenClipboard失败；lastError=" . A_LastError)
+        return selected
+    }
+
+    try {
+        ; CF_HDROP 是资源管理器复制文件时提供的原生路径列表，不解析剪贴板文本。
+        hDrop := DllCall("GetClipboardData", "UInt", 15, "Ptr")
+        if !hDrop {
+            LogPanelDiagnostic("剪贴板没有CF_HDROP", "GetClipboardData(CF_HDROP)返回空；lastError=" . A_LastError)
+            return selected
+        }
+
+        fileCount := DllCall("shell32\DragQueryFileW", "Ptr", hDrop, "UInt", 0xFFFFFFFF, "Ptr", 0, "UInt", 0, "UInt")
+        Loop fileCount {
+            index := A_Index - 1
+            charCount := DllCall("shell32\DragQueryFileW", "Ptr", hDrop, "UInt", index, "Ptr", 0, "UInt", 0, "UInt")
+            if (charCount = 0)
+                continue
+
+            pathBuffer := Buffer((charCount + 1) * 2, 0)
+            DllCall("shell32\DragQueryFileW", "Ptr", hDrop, "UInt", index, "Ptr", pathBuffer, "UInt", charCount + 1, "UInt")
+            filePath := StrGet(pathBuffer, "UTF-16")
+            if (filePath != "" && FileExist(filePath))
+                selected.Push(filePath)
+        }
+    } finally {
+        DllCall("CloseClipboard")
+    }
+
+    LogPanelDiagnostic("CF_HDROP读取成功", "fileCount=" . selected.Length
+        . (selected.Length ? "`r`n" . JoinLines(selected) : "`r`nCF_HDROP中无可访问路径"))
     return selected
 }
 
@@ -728,6 +1172,40 @@ RunShortcutWithFile(shortcut, filePath) {
     commandLine .= ' "' . filePath . '"'
 
     Run(commandLine, workingDirectory)
+}
+
+ReloadZwcadAaLsp() {
+    global AaLspPath
+    title := "中望 CAD 脚本重载"
+
+    if (!FileExist(AaLspPath)) {
+        MsgBox("未找到整合版本 LISP 脚本文件：`n" . AaLspPath, title, "Icon!")
+        return
+    }
+
+    ; 转换为 AutoLISP 所需的正斜杠路径
+    escapedPath := StrReplace(AaLspPath, "\", "/")
+
+    try {
+        cadApp := ComObjActive("ZWCAD.Application")
+    } catch as err {
+        MsgBox("未检测到运行中的中望 CAD（ZWCAD.Application）。`n请确认中望 CAD 2026 已经启动。", title, "Icon!")
+        return
+    }
+
+    try {
+        doc := cadApp.ActiveDocument
+        if (!doc) {
+            MsgBox("中望 CAD 当前没有打开任何图纸，请先打开或新建一张图纸。", title, "Icon!")
+            return
+        }
+
+        ; 发送加载命令，以换行结尾触发执行
+        doc.SendCommand('(load "' . escapedPath . '")`n')
+        TrayTip("已向中望 CAD 发送重载指令：`n" . AaLspPath, title, "Iconi Mute")
+    } catch as err {
+        MsgBox("向中望 CAD 发送加载命令失败：`n" . err.Message, title, "Icon!")
+    }
 }
 
 AddTextToExcelSelection(position) {
@@ -1178,6 +1656,10 @@ GetSpreadsheetCellContent(cell) {
 }
 
 SetSpreadsheetCellContent(cell, content) {
+    if !IsObject(content) {
+        cell.Value := content
+        return
+    }
     if (content["type"] = "formulaR1C1")
         cell.FormulaR1C1 := content["value"]
     else
@@ -1566,23 +2048,62 @@ FindLatestUndoActionIndex(provider) {
 }
 
 RestoreUndoAction(app, action) {
-    for _, item in action["items"] {
-        wb := GetWorkbookByFullName(app, item["workbook"])
-        if (!IsObject(wb))
-            throw Error("找不到原工作簿：" . item["workbook"])
+    oldAlerts := GetSpreadsheetProperty(app, "DisplayAlerts", true)
+    oldUpdating := GetSpreadsheetProperty(app, "ScreenUpdating", true)
+    oldCalc := GetSpreadsheetProperty(app, "Calculation", -4105)
+    wsPageBreakStates := []
+    try {
+        try app.DisplayAlerts := false
+        try app.ScreenUpdating := false
+        try app.Calculation := -4135
 
-        ws := wb.Worksheets(item["sheet"])
-        if (item.Has("kind") && item["kind"] = "merge") {
-            RestoreMergedRangeUndoItem(ws, item)
-            continue
-        }
-        if (item.Has("kind") && item["kind"] = "unmergeFill") {
-            RestoreUnmergedRangeUndoItem(ws, item)
-            continue
-        }
+        currentWbFullName := ""
+        currentWb := ""
+        currentWsName := ""
+        currentWs := ""
 
-        range := ws.Range(item["address"])
-        range.Formula := item["formula"]
+        for _, item in action["items"] {
+            itemWbName := item["workbook"]
+            itemWsName := item["sheet"]
+
+            if (itemWbName != currentWbFullName || !IsObject(currentWb)) {
+                currentWbFullName := itemWbName
+                currentWb := GetWorkbookByFullName(app, currentWbFullName)
+                if (!IsObject(currentWb))
+                    throw Error("找不到原工作簿：" . currentWbFullName)
+                currentWsName := ""
+                currentWs := ""
+            }
+
+            if (itemWsName != currentWsName || !IsObject(currentWs)) {
+                currentWsName := itemWsName
+                currentWs := currentWb.Worksheets(currentWsName)
+                try {
+                    oldPb := currentWs.DisplayPageBreaks
+                    wsPageBreakStates.Push(Map("ws", currentWs, "state", oldPb))
+                    currentWs.DisplayPageBreaks := false
+                }
+            }
+
+            if (item.Has("kind") && item["kind"] = "merge") {
+                RestoreMergedRangeUndoItem(currentWs, item)
+                continue
+            }
+            if (item.Has("kind") && item["kind"] = "unmergeFill") {
+                RestoreUnmergedRangeUndoItem(currentWs, item)
+                continue
+            }
+
+            range := currentWs.Range(item["address"])
+            range.Formula := item["formula"]
+        }
+    } finally {
+        for _, pbInfo in wsPageBreakStates {
+            try pbInfo["ws"].DisplayPageBreaks := pbInfo["state"]
+        }
+        try app.Calculation := oldCalc
+        try app.ScreenUpdating := oldUpdating
+        try app.DisplayAlerts := oldAlerts
     }
 }
 
@@ -1599,8 +2120,10 @@ RestoreUnmergedRangeUndoItem(ws, item) {
     }
 
     range.Merge()
-    range.HorizontalAlignment := item["horizontalAlignment"]
-    range.VerticalAlignment := item["verticalAlignment"]
+    if (item.Has("horizontalAlignment") && item["horizontalAlignment"] != "")
+        try range.HorizontalAlignment := item["horizontalAlignment"]
+    if (item.Has("verticalAlignment") && item["verticalAlignment"] != "")
+        try range.VerticalAlignment := item["verticalAlignment"]
     item["applied"] := false
 }
 
@@ -1611,11 +2134,29 @@ RestoreMergedRangeUndoItem(ws, item) {
     range := ws.Range(item["address"])
     range.UnMerge()
 
-    for cellState in item["cells"] {
-        cell := ws.Range(cellState["address"])
-        SetSpreadsheetCellContent(cell, cellState["content"])
-        cell.HorizontalAlignment := cellState["horizontalAlignment"]
-        cell.VerticalAlignment := cellState["verticalAlignment"]
+    cells := item["cells"]
+    if (cells.Length > 0) {
+        firstContent := cells[1]["content"]
+        allSame := true
+        for cellState in cells {
+            if (cellState["content"] != firstContent) {
+                allSame := false
+                break
+            }
+        }
+        if (allSame) {
+            ; 纯同值区域利用 Range 广播一次性写回，极大压缩撤销还原耗时
+            SetSpreadsheetCellContent(range, firstContent)
+        } else {
+            for cellState in cells {
+                cell := ws.Range(cellState["address"])
+                SetSpreadsheetCellContent(cell, cellState["content"])
+                if (cellState.Has("horizontalAlignment") && cellState["horizontalAlignment"] != "")
+                    try cell.HorizontalAlignment := cellState["horizontalAlignment"]
+                if (cellState.Has("verticalAlignment") && cellState["verticalAlignment"] != "")
+                    try cell.VerticalAlignment := cellState["verticalAlignment"]
+            }
+        }
     }
 
     item["applied"] := false
@@ -1790,6 +2331,378 @@ ReplaceTextInSelectedFileNames() {
     ExecuteFileRenameOperations(operations, title)
 }
 
+ReplaceCustomTextInSelectedFileNames() {
+    title := "替换文件名中的文字"
+    findInput := InputBox("请输入要查找的文件名文字：", title, "w450 h140")
+    if (findInput.Result != "OK")
+        return
+
+    findText := findInput.Value
+    if (findText = "") {
+        MsgBox("要查找的文字不能为空。", title, "Icon!")
+        return
+    }
+
+    replaceInput := InputBox("请输入替换后的文字；留空表示删除查找内容：", title, "w470 h145")
+    if (replaceInput.Result != "OK")
+        return
+
+    replaceText := replaceInput.Value
+    if (replaceText != "" && !ValidateFileNamePart(replaceText, title))
+        return
+
+    files := GetSelectedFilePaths()
+    if (files.Length = 0) {
+        MsgBox("没有读取到选中的文件。请先在资源管理器或桌面选中一个或多个文件。", title, "Icon!")
+        return
+    }
+
+    operations := []
+    for _, path in files {
+        if DirExist(path)
+            continue
+        SplitPath(path, , &dir, &ext, &nameNoExt)
+        if !InStr(nameNoExt, findText, false)
+            continue
+        newBase := StrReplace(nameNoExt, findText, replaceText, false)
+        if (newBase = "") {
+            MsgBox("替换后文件名会变空，已取消。`n`n文件：" . path, title, "Icon!")
+            return
+        }
+        newPath := dir . "\" . newBase . (ext = "" ? "" : "." . ext)
+        if (newPath != path)
+            operations.Push(Map("from", path, "to", newPath))
+    }
+
+    ExecuteFileRenameOperations(operations, title)
+}
+
+MergeSelectedPdfFiles() {
+    title := "合并 PDF"
+    selectedFiles := GetSelectedFilePaths()
+    pdfFiles := []
+    for _, path in selectedFiles {
+        if DirExist(path)
+            continue
+        SplitPath(path, , , &extension)
+        if (StrLower(extension) = "pdf")
+            pdfFiles.Push(path)
+    }
+
+    if (pdfFiles.Length < 2) {
+        MsgBox("请先在资源管理器或桌面中选中至少两个 PDF 文件，再打开面板执行合并。", title, "Icon!")
+        return
+    }
+
+    input := InputBox("请输入合并后的文件名，例如：合并结果.pdf", title, "w460 h145", "合并结果.pdf")
+    if (input.Result != "OK")
+        return
+
+    outputName := Trim(input.Value)
+    if (outputName = "")
+        outputName := "合并结果.pdf"
+    if (StrLower(SubStr(outputName, -3)) = ".pdf")
+        outputName := SubStr(outputName, 1, -4)
+    if (outputName = "" || !ValidateFileNamePart(outputName, title))
+        return
+
+    firstPath := pdfFiles[1]
+    SplitPath(firstPath, , &outputDir)
+    outputPath := outputDir . "\" . outputName . ".pdf"
+    if FileExist(outputPath) {
+        if (MsgBox("目标文件已存在：`n`n" . outputPath . "`n`n是否覆盖？", title, "YesNo Icon? Default2") != "Yes")
+            return
+    }
+
+    previewLines := []
+    for _, path in pdfFiles {
+        SplitPath(path, &fileName)
+        previewLines.Push(fileName)
+    }
+    prompt := "将按当前选中顺序合并 " . pdfFiles.Length . " 个 PDF：`n`n"
+        . JoinLines(previewLines, 10)
+        . "`n`n输出位置：" . outputPath . "`n`n继续？"
+    if (MsgBox(prompt, title, "OKCancel Icon? Default2") != "OK")
+        return
+
+    uniqueSuffix := A_NowUTC . "-" . Random(100000, 999999)
+    scriptPath := A_Temp . "\merge-selected-pdfs-" . uniqueSuffix . ".py"
+    tempOutputPath := outputPath . ".tmp-" . uniqueSuffix
+    pythonScript := "import sys`n"
+        . "from pypdf import PdfWriter`n"
+        . "inputs = sys.argv[1:-2]`n"
+        . "temp_output, final_output = sys.argv[-2:]`n"
+        . "writer = PdfWriter()`n"
+        . "try:`n"
+        . "    for path in inputs:`n"
+        . "        writer.append(path)`n"
+        . "    with open(temp_output, 'wb') as output:`n"
+        . "        writer.write(output)`n"
+        . "finally:`n"
+        . "    writer.close()`n"
+        . "import os`n"
+        . "if os.path.exists(final_output):`n"
+        . "    os.remove(final_output)`n"
+        . "os.rename(temp_output, final_output)`n"
+
+    try {
+        if FileExist(tempOutputPath)
+            FileDelete(tempOutputPath)
+        FileAppend(pythonScript, scriptPath, "UTF-8")
+        commandLine := 'python "' . scriptPath . '"'
+        for _, path in pdfFiles
+            commandLine .= ' "' . StrReplace(path, '"', '\"') . '"'
+        commandLine .= ' "' . tempOutputPath . '" "' . outputPath . '"'
+        exitCode := RunWait(commandLine, outputDir, "Hide")
+        if (exitCode != 0) {
+            if FileExist(tempOutputPath)
+                FileDelete(tempOutputPath)
+            MsgBox("PDF 合并失败。请确认 PDF 未损坏且本机 Python 已安装 pypdf。`n`n退出代码：" . exitCode, title, "Icon!")
+            return
+        }
+        TrayTip("已合并 " . pdfFiles.Length . " 个 PDF 文件。", title, 1)
+    } catch as err {
+        if FileExist(tempOutputPath)
+            try FileDelete(tempOutputPath)
+        MsgBox("PDF 合并失败：`n`n" . err.Message, title, "Icon!")
+    } finally {
+        if FileExist(scriptPath)
+            try FileDelete(scriptPath)
+    }
+}
+
+ConvertSelectedExcelFilesToPdf() {
+    global AutomationContextHwnd
+    title := "Excel 转 PDF"
+    selectedFiles := GetSelectedFilePaths()
+    LogPanelDiagnostic("Excel转换选区", "contextHwnd=" . AutomationContextHwnd . "; pathCount=" . selectedFiles.Length
+        . (selectedFiles.Length ? "`r`n" . JoinLines(selectedFiles) : "`r`n未读取到路径"))
+    excelFiles := []
+    seenPaths := Map()
+    supportedExtensions := Map("xls", true, "xlsx", true, "xlsm", true, "xlsb", true)
+    for _, path in selectedFiles {
+        if DirExist(path)
+            continue
+        SplitPath(path, , , &extension)
+        pathKey := StrLower(path)
+        if (supportedExtensions.Has(StrLower(extension)) && !seenPaths.Has(pathKey)) {
+            seenPaths[pathKey] := true
+            excelFiles.Push(path)
+        }
+    }
+
+    if (excelFiles.Length = 0) {
+        LogPanelDiagnostic("Excel转换未找到工作簿", "selectedPathCount=" . selectedFiles.Length)
+        MsgBox("请先在资源管理器或桌面选中至少一个 Excel 工作簿（.xls、.xlsx、.xlsm 或 .xlsb）。", title, "Icon!")
+        return
+    }
+
+    if (excelFiles.Length > 1) {
+        prompt := "当前选区中检测到 " . excelFiles.Length . " 个不同的 Excel 工作簿：`n`n"
+            . JoinLines(excelFiles, 8)
+            . "`n`n将逐个把整个工作簿（含隐藏工作表）转换为同名 PDF，继续吗？"
+        if (MsgBox(prompt, title, "YesNo Icon? Default2") != "Yes")
+            return
+    }
+
+    outputFiles := []
+    existingFiles := []
+    outputPaths := Map()
+    for _, path in excelFiles {
+        SplitPath(path, , &dir, , &nameNoExt)
+        outputPath := dir . "\" . nameNoExt . ".pdf"
+        outputKey := StrLower(outputPath)
+        if outputPaths.Has(outputKey) {
+            MsgBox("多个工作簿会生成同一个 PDF 文件，无法安全批量转换：`n`n" . outputPath
+                . "`n`n请将工作簿改成不同的文件名后再试。", title, "Icon!")
+            return
+        }
+        outputPaths[outputKey] := path
+        outputFiles.Push(Map("source", path, "output", outputPath))
+        if FileExist(outputPath)
+            existingFiles.Push(outputPath)
+    }
+
+    if (existingFiles.Length > 0) {
+        prompt := "以下同名 PDF 已存在，转换后会覆盖：`n`n"
+            . JoinLines(existingFiles, 8)
+            . "`n`n共 " . existingFiles.Length . " 个。是否继续？"
+        if (MsgBox(prompt, title, "YesNo Icon? Default2") != "Yes")
+            return
+    }
+
+    excel := ""
+    successList := []
+    failedList := []
+    try {
+        excel := ComObject("Excel.Application")
+        excel.Visible := false
+        excel.DisplayAlerts := false
+        excel.EnableEvents := false
+        excel.AskToUpdateLinks := false
+        excel.AutomationSecurity := 3
+
+        for _, item in outputFiles {
+            tempOutput := item["output"] . ".tmp-" . A_NowUTC . "-" . Random(100000, 999999) . ".pdf"
+            workbook := ""
+            sheetStates := []
+            try {
+                workbook := excel.Workbooks.Open(item["source"], 0, true)
+                for sheet in workbook.Worksheets {
+                    visibility := sheet.Visible
+                    sheetStates.Push(Map("sheet", sheet, "visible", visibility))
+                    if (visibility != -1)
+                        sheet.Visible := -1
+                }
+
+                try {
+                    workbook.ExportAsFixedFormat(0, tempOutput, 0, true, false)
+                } finally {
+                    Loop sheetStates.Length {
+                        state := sheetStates[sheetStates.Length - A_Index + 1]
+                        if (state["visible"] != -1)
+                            state["sheet"].Visible := state["visible"]
+                    }
+                }
+
+                workbook.Close(false)
+                workbook := ""
+                if !FileExist(tempOutput)
+                    throw Error("Excel 未生成 PDF 文件。")
+                FileMove(tempOutput, item["output"], 1)
+                successList.Push(item["output"])
+                LogPanelDiagnostic("Excel转换成功", item["source"] . "`r`n=> " . item["output"])
+            } catch as err {
+                if IsObject(workbook)
+                    try workbook.Close(false)
+                if FileExist(tempOutput)
+                    try FileDelete(tempOutput)
+                failedList.Push(item["source"] . "`n  " . err.Message)
+                LogPanelDiagnostic("Excel转换单文件失败", item["source"] . "`r`n" . err.Message)
+            }
+        }
+    } catch as err {
+        failedList.Push("无法启动 Microsoft Excel。请确认已安装 Excel。`n  " . err.Message)
+        LogPanelDiagnostic("Excel转换初始化失败", err.Message)
+    } finally {
+        if IsObject(excel)
+            try excel.Quit()
+    }
+
+    if (failedList.Length > 0) {
+        message := "转换完成：成功 " . successList.Length . " 个，失败 " . failedList.Length . " 个。`n`n"
+            . JoinLines(failedList, 6)
+        if (successList.Length > 0)
+            message .= "`n`n成功生成：`n" . JoinLines(successList, 6)
+        MsgBox(message, title, "Icon!")
+    } else {
+        LogPanelDiagnostic("Excel转换完成", "successCount=" . successList.Length . "; failedCount=0")
+        TrayTip("已将 " . successList.Length . " 个 Excel 工作簿转换为 PDF。", title, 1)
+    }
+}
+
+ConvertSelectedWordFilesToPdf() {
+    global AutomationContextHwnd
+    title := "Word 转 PDF"
+    selectedFiles := GetSelectedFilePaths()
+    LogPanelDiagnostic("Word转换选区", "contextHwnd=" . AutomationContextHwnd . "; pathCount=" . selectedFiles.Length
+        . (selectedFiles.Length ? "`r`n" . JoinLines(selectedFiles) : "`r`n未读取到路径"))
+    wordFiles := []
+    seenPaths := Map()
+    for _, path in selectedFiles {
+        if DirExist(path)
+            continue
+        SplitPath(path, , , &extension)
+        pathKey := StrLower(path)
+        if ((StrLower(extension) = "doc" || StrLower(extension) = "docx" || StrLower(extension) = "docm")
+            && !seenPaths.Has(pathKey)) {
+            seenPaths[pathKey] := true
+            wordFiles.Push(path)
+        }
+    }
+
+    if (wordFiles.Length = 0) {
+        LogPanelDiagnostic("Word转换未找到文档", "selectedPathCount=" . selectedFiles.Length)
+        MsgBox("请先在资源管理器或桌面选中至少一个 Word 文档（.doc、.docx 或 .docm）。", title, "Icon!")
+        return
+    }
+
+    if (wordFiles.Length > 1) {
+        LogPanelDiagnostic("Word转换多文件确认", "documentCount=" . wordFiles.Length . "`r`n" . JoinLines(wordFiles))
+        prompt := "当前选区中检测到 " . wordFiles.Length . " 个不同的 Word 文档：`n`n"
+            . JoinLines(wordFiles, 8)
+            . "`n`n将逐个转换为同名 PDF，继续吗？"
+        if (MsgBox(prompt, title, "YesNo Icon? Default2") != "Yes")
+            return
+    }
+
+    outputFiles := []
+    existingFiles := []
+    for _, path in wordFiles {
+        SplitPath(path, , &dir, , &nameNoExt)
+        outputPath := dir . "\" . nameNoExt . ".pdf"
+        outputFiles.Push(Map("source", path, "output", outputPath))
+        if FileExist(outputPath)
+            existingFiles.Push(outputPath)
+    }
+
+    if (existingFiles.Length > 0) {
+        prompt := "以下同名 PDF 已存在，转换后会覆盖：`n`n"
+            . JoinLines(existingFiles, 8)
+            . "`n`n共 " . existingFiles.Length . " 个。是否继续？"
+        if (MsgBox(prompt, title, "YesNo Icon? Default2") != "Yes")
+            return
+    }
+
+    word := ""
+    successList := []
+    failedList := []
+    try {
+        word := ComObject("Word.Application")
+        word.Visible := false
+        word.DisplayAlerts := 0
+        word.AutomationSecurity := 3
+
+        for _, item in outputFiles {
+            tempOutput := item["output"] . ".tmp-" . A_NowUTC . "-" . Random(100000, 999999) . ".pdf"
+            doc := ""
+            try {
+                doc := word.Documents.Open(item["source"], false, true, false)
+                doc.ExportAsFixedFormat(tempOutput, 17)
+                doc.Close(0)
+                doc := ""
+                FileMove(tempOutput, item["output"], 1)
+                successList.Push(item["output"])
+                LogPanelDiagnostic("Word转换成功", item["source"] . "`r`n=> " . item["output"])
+            } catch as err {
+                if IsObject(doc)
+                    try doc.Close(0)
+                if FileExist(tempOutput)
+                    try FileDelete(tempOutput)
+                failedList.Push(item["source"] . "`n  " . err.Message)
+                LogPanelDiagnostic("Word转换单文件失败", item["source"] . "`r`n" . err.Message)
+            }
+        }
+    } catch as err {
+        failedList.Push("无法启动 Microsoft Word。请确认已安装 Word。`n  " . err.Message)
+        LogPanelDiagnostic("Word转换初始化失败", err.Message)
+    } finally {
+        if IsObject(word)
+            try word.Quit(0)
+    }
+
+    if (failedList.Length > 0) {
+        message := "转换完成：成功 " . successList.Length . " 个，失败 " . failedList.Length . " 个。`n`n"
+            . JoinLines(failedList, 6)
+        if (successList.Length > 0)
+            message .= "`n`n成功生成：`n" . JoinLines(successList, 6)
+        MsgBox(message, title, "Icon!")
+    } else {
+        LogPanelDiagnostic("Word转换完成", "successCount=" . successList.Length . "; failedCount=0")
+        TrayTip("已将 " . successList.Length . " 个 Word 文档转换为 PDF。", title, 1)
+    }
+}
+
 RemoveFileNameText(text, deleteCount, position) {
     if (deleteCount >= StrLen(text))
         return ""
@@ -1801,50 +2714,21 @@ RemoveFileNameText(text, deleteCount, position) {
 }
 
 GetSelectedFilePaths() {
-    global AutomationContextHwnd
+    global AutomationSelectedFilePaths
+    return AutomationSelectedFilePaths.Clone()
+}
 
-    hwnd := AutomationContextHwnd
-    if (!hwnd)
-        hwnd := WinExist("A")
-    className := WinGetClass("ahk_id " . hwnd)
-
-    if (className = "CabinetWClass" || className = "ExploreWClass") {
-        selected := GetSelectedFilePathsFromClipboard(hwnd)
-        if (selected.Length > 0)
-            return selected
-        selected := GetExplorerSelectedFilePaths(hwnd)
-        if (selected.Length > 0)
-            return selected
+DeduplicateSelectedFilePaths(paths) {
+    uniquePaths := []
+    seenPaths := Map()
+    for _, path in paths {
+        key := StrLower(path)
+        if seenPaths.Has(key)
+            continue
+        seenPaths[key] := true
+        uniquePaths.Push(path)
     }
-
-    if (className = "Progman" || className = "WorkerW")
-        selected := GetDesktopSelectedFilePaths()
-    else
-        selected := []
-
-    if (selected.Length > 0)
-        return selected
-
-    ; 面板打开后部分系统版本会改变原窗口句柄，扫描所有资源管理器窗口兜底。
-    shellApp := ComObject("Shell.Application")
-    try {
-        for window in shellApp.Windows {
-            try {
-                selected := []
-                for item in window.Document.SelectedItems
-                    selected.Push(item.Path)
-                if (selected.Length > 0)
-                    return selected
-            }
-        }
-    }
-    try {
-        selected := GetDesktopSelectedFilePaths()
-        if (selected.Length > 0)
-            return selected
-    }
-
-    return []
+    return uniquePaths
 }
 
 GetExplorerSelectedFilePaths(hwnd) {
@@ -2015,6 +2899,10 @@ AddUndoRange(action, range) {
 }
 
 AddUndoMergeRange(action, range) {
+    wbFullName := range.Worksheet.Parent.FullName
+    wsName := range.Worksheet.Name
+    addr := range.Address(false, false)
+
     cells := []
     for cell in range.Cells {
         cells.Push(Map(
@@ -2027,9 +2915,9 @@ AddUndoMergeRange(action, range) {
 
     item := Map(
         "kind", "merge",
-        "workbook", range.Worksheet.Parent.FullName,
-        "sheet", range.Worksheet.Name,
-        "address", range.Address(false, false),
+        "workbook", wbFullName,
+        "sheet", wsName,
+        "address", addr,
         "cells", cells,
         "applied", false
     )
@@ -2040,18 +2928,23 @@ AddUndoMergeRange(action, range) {
 AddUndoUnmergeRange(action, range) {
     ; 合并区域只有左上角保留有效内容，撤销时无需逐个保存空白单元格。
     firstCell := range.Cells(1, 1)
+    fillContent := GetSpreadsheetCellContent(firstCell)
+    wbFullName := range.Worksheet.Parent.FullName
+    wsName := range.Worksheet.Name
+    addr := range.Address(false, false)
+
     cells := [Map(
         "address", firstCell.Address(false, false),
-        "content", GetSpreadsheetCellContent(firstCell)
+        "content", fillContent
     )]
 
     item := Map(
         "kind", "unmergeFill",
-        "workbook", range.Worksheet.Parent.FullName,
-        "sheet", range.Worksheet.Name,
-        "address", range.Address(false, false),
+        "workbook", wbFullName,
+        "sheet", wsName,
+        "address", addr,
         "cells", cells,
-        "fillContent", GetSpreadsheetCellContent(firstCell),
+        "fillContent", fillContent,
         "horizontalAlignment", range.HorizontalAlignment,
         "verticalAlignment", range.VerticalAlignment,
         "applied", false

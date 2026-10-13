@@ -49,7 +49,12 @@ Get-CimInstance Win32_Process -Filter "Name LIKE 'AutoHotkey%'" |
         Stop-Process -Id $_.ProcessId -Force
     }
 
-Start-Process -FilePath $ahkExe -ArgumentList ('"' + $sourceScript + '"') -WorkingDirectory $projectRoot -WindowStyle Hidden
+$taskName = "StartAutoHotkeyPanel"
+$taskAction = New-ScheduledTaskAction -Execute $ahkExe -Argument ('"' + $sourceScript + '"') -WorkingDirectory $projectRoot
+Register-ScheduledTask -TaskName $taskName -Action $taskAction -Force | Out-Null
+Start-ScheduledTask -TaskName $taskName
+Start-Sleep -Milliseconds 600
+Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
 
 Write-Host "Installed automation panel:"
 Write-Host "  Script: $sourceScript"
