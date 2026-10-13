@@ -2,6 +2,7 @@
 #SingleInstance Force
 Persistent
 #Include spreadsheet-export.ahk
+#Include spreadsheet-numeric-offset.ahk
 
 global AutomationPanelGui := ""
 global AutomationContextHwnd := 0
@@ -144,7 +145,10 @@ ShowAutomationPanel() {
     undoButton := panel.AddButton("x234 y366 w190 h34", "撤销上次表格操作")
     undoButton.OnEvent("Click", (*) => RunPanelCommand(UndoExcelCommandPanelAction))
 
-    exportButton := panel.AddButton("x34 y408 w390 h34", "导出选区信息（给 AI）")
+    offsetButton := panel.AddButton("x34 y408 w190 h34", "数字批量加减")
+    offsetButton.OnEvent("Click", (*) => RunPanelCommand(OffsetSpreadsheetSelectionNumbers))
+
+    exportButton := panel.AddButton("x234 y408 w190 h34", "导出选区信息（给 AI）")
     exportButton.OnEvent("Click", (*) => RunPanelCommand(ExportSpreadsheetSelection))
 
     tabs.UseTab(3)
