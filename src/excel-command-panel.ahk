@@ -12,6 +12,7 @@ global ExcelCommandUndoStack := []
 global SelectedDwgPath := ""
 global CopyQExe := "D:\CopyQ\copyq.exe"
 global AaLspPath := "D:\Syncthing\Oracle-Sync\LISP\ZW-auto_lisp\AA整合版本.lsp"
+global AcadAaLspPath := "D:\Syncthing\Oracle-Sync\LISP\AutoCAD2018_lisp\AA整合版本.lsp"
 LogPanelDiagnostic("脚本初始化启动", "PID=" . ProcessExist() . "; ScriptHwnd=" . A_ScriptHwnd . "; Class=" . WinGetClass(A_ScriptHwnd))
 
 LogPanelDiagnostic(eventName, details := "") {
@@ -41,7 +42,7 @@ LogPanelDiagnostic(eventName, details := "") {
     }
 }
 
-#HotIf WinActive("ahk_exe EXCEL.EXE")
+#HotIf WinActive("ahk_exe EXCEL.EXE") && ExcelCommandUndoStack.Length > 0
 $^z::UndoExcelCommandPanelAction()
 #HotIf
 
@@ -104,10 +105,13 @@ ShowAutomationPanel() {
         quickViewButton.Enabled := false
     }
 
-    reloadLspButton := panel.AddButton("x34 y310 w390 h42", "重新加载 AA整合版本.lsp (中望 CAD)")
+    reloadLspButton := panel.AddButton("x34 y310 w190 h42", "重新加载插件 (中望 CAD)")
     reloadLspButton.OnEvent("Click", (*) => RunPanelCommand(ReloadZwcadAaLsp))
 
-    panel.AddText("x34 y364 w390 c666666", "说明：打开图纸只转交选中文件；重载脚本会直接通知运行中的中望 CAD 重新加载 AA整合版本.lsp。")
+    reloadAcadLspButton := panel.AddButton("x234 y310 w190 h42", "重新加载插件 (AutoCAD)")
+    reloadAcadLspButton.OnEvent("Click", (*) => RunPanelCommand(ReloadAutocadAaLsp))
+
+    panel.AddText("x34 y364 w390 c666666", "说明：打开图纸只转交选中文件；重载插件会直接通知运行中的中望 CAD 或 AutoCAD 重新加载各自的 AA整合版本.lsp。")
 
     tabs.UseTab(2)
     panel.AddText("x34 y58 w390 c666666", "处理当前 Excel 或 WPS 表格选区。")
@@ -330,17 +334,8 @@ SplitMergedSpreadsheetCellsAndFill(explicitContext := "") {
     if IsObject(explicitContext) {
         context := explicitContext
     } else {
-        ; 拆分功能优先读取按钮执行时的实时选区，避免面板打开后重新选区仍处理旧范围。
-        context := GetSpreadsheetContext(title, false)
-        if IsObject(context) {
-            try {
-                context["selection"] := context["app"].Selection
-                context["selection"].Cells.Count
-            } catch
-                context := ""
-        }
-        if !IsObject(context)
-            context := GetSpreadsheetSelectionContext(title)
+        ; 面板取得焦点后，Selection 可能发生变化；始终使用打开面板前的快照。
+        context := GetSpreadsheetSelectionContext(title)
     }
     if !IsObject(context)
         return
@@ -412,8 +407,11 @@ SplitMergedSpreadsheetCellsAndFill(explicitContext := "") {
                     curRelCol := 0
                     inTable := false
 
-                    Loop Parse, xmlStr, "`n", "`r" {
-                        line := A_LoopField
+                    ; 完整标签可能位于同一行，属性也可能跨行，不能按行解析。
+                    xmlPosition := 1
+                    while RegExMatch(xmlStr, "i)<(?:Table|Row|Cell)\b[^>]*>|</Table\s*>", &xmlTag, xmlPosition) {
+                        line := xmlTag[0]
+                        xmlPosition := xmlTag.Pos + xmlTag.Len
                         if (!inTable) {
                             if InStr(line, "<Table")
                                 inTable := true
@@ -497,7 +495,8 @@ SplitMergedSpreadsheetCellsAndFill(explicitContext := "") {
                             }
                         }
                     }
-                    hasParsedXml := true
+                    ; 找到 Table 却未识别到合并块时，必须进入兼容检测。
+                    hasParsedXml := (areaItems.Length > 0)
                 }
             }
 
@@ -1180,35 +1179,44 @@ RunShortcutWithFile(shortcut, filePath) {
 
 ReloadZwcadAaLsp() {
     global AaLspPath
-    title := "中望 CAD 脚本重载"
+    ReloadCadAaLsp("ZWCAD.Application", "中望 CAD", "中望 CAD 2026", AaLspPath)
+}
 
-    if (!FileExist(AaLspPath)) {
-        MsgBox("未找到整合版本 LISP 脚本文件：`n" . AaLspPath, title, "Icon!")
+ReloadAutocadAaLsp() {
+    global AcadAaLspPath
+    ReloadCadAaLsp("AutoCAD.Application", "AutoCAD", "AutoCAD 2018", AcadAaLspPath)
+}
+
+ReloadCadAaLsp(progId, cadName, cadFullName, lspPath) {
+    title := cadName . " 插件重载"
+
+    if (!FileExist(lspPath)) {
+        MsgBox("未找到整合版本 LISP 脚本文件：`n" . lspPath, title, "Icon!")
         return
     }
 
     ; 转换为 AutoLISP 所需的正斜杠路径
-    escapedPath := StrReplace(AaLspPath, "\", "/")
+    escapedPath := StrReplace(lspPath, "\", "/")
 
     try {
-        cadApp := ComObjActive("ZWCAD.Application")
+        cadApp := ComObjActive(progId)
     } catch as err {
-        MsgBox("未检测到运行中的中望 CAD（ZWCAD.Application）。`n请确认中望 CAD 2026 已经启动。", title, "Icon!")
+        MsgBox("未检测到运行中的 " . cadName . "（" . progId . "）。`n请确认 " . cadFullName . " 已经启动。", title, "Icon!")
         return
     }
 
     try {
         doc := cadApp.ActiveDocument
         if (!doc) {
-            MsgBox("中望 CAD 当前没有打开任何图纸，请先打开或新建一张图纸。", title, "Icon!")
+            MsgBox(cadName . " 当前没有打开任何图纸，请先打开或新建一张图纸。", title, "Icon!")
             return
         }
 
         ; 发送加载命令，以换行结尾触发执行
         doc.SendCommand('(load "' . escapedPath . '")`n')
-        TrayTip("已向中望 CAD 发送重载指令：`n" . AaLspPath, title, "Iconi Mute")
+        TrayTip("已向 " . cadName . " 发送重载指令：`n" . lspPath, title, "Iconi Mute")
     } catch as err {
-        MsgBox("向中望 CAD 发送加载命令失败：`n" . err.Message, title, "Icon!")
+        MsgBox("向 " . cadName . " 发送加载命令失败：`n" . err.Message, title, "Icon!")
     }
 }
 
@@ -1287,12 +1295,12 @@ AddTextToExcelSelection(position) {
 }
 
 RemoveBracketTextFromExcelSelection() {
-    context := GetSpreadsheetContext("表格删除括号内容")
+    context := GetSpreadsheetSelectionContext("表格删除括号内容")
     if !IsObject(context)
         return
     xl := context["app"]
 
-    try selection := xl.Selection
+    try selection := context["selection"]
     catch {
         MsgBox("无法读取当前表格选区。请先选中一个或多个单元格。", "表格删除括号内容", "Icon!")
         return
@@ -1455,12 +1463,12 @@ RemoveTextFromExcelSelection(position) {
 
 SortCableRowsByCrossSection() {
     title := "按电缆截面排序"
-    context := GetSpreadsheetContext(title)
+    context := GetSpreadsheetSelectionContext(title)
     if !IsObject(context)
         return
     app := context["app"]
 
-    try selection := app.Selection
+    try selection := context["selection"]
     catch {
         MsgBox("无法读取当前表格选区。请先选中需要整行一起排序的数据区域。", title, "Icon!")
         return
@@ -1728,18 +1736,18 @@ CompareCableRows(left, right) {
 }
 
 DedupeAndGroupExcelSelectedColumn() {
-    context := GetSpreadsheetContext("表格列去重整理")
+    context := GetSpreadsheetSelectionContext("表格列去重整理")
     if !IsObject(context)
         return
     xl := context["app"]
 
-    try ws := xl.ActiveSheet
+    try ws := context["selection"].Worksheet
     catch {
         MsgBox("无法读取当前活动工作表。请先切换到要整理的工作表。", "表格列去重整理", "Icon!")
         return
     }
 
-    try selection := xl.Selection
+    try selection := context["selection"]
     catch {
         MsgBox("无法读取当前选区。请先点一下要整理列里的任意单元格。", "表格列去重整理", "Icon!")
         return
@@ -1936,20 +1944,20 @@ CaptureSpreadsheetSelectionContext(hwnd) {
 
     app := TryGetActiveComObject(progId)
     if !IsObject(app)
-        return ""
+        return Map("error", "无法连接当前表格程序，请确认面板与表格都以普通权限运行。")
 
     try {
         selection := app.Selection
         cells := selection.Cells
         cellCount := cells.Count
-        workbook := app.ActiveWorkbook
-        worksheet := app.ActiveSheet
+        worksheet := selection.Worksheet
+        workbook := worksheet.Parent
         workbookFullName := workbook.FullName
         workbookName := workbook.Name
         worksheetName := worksheet.Name
         selectionAddress := selection.Address
-    } catch {
-        return ""
+    } catch as err {
+        return Map("error", "无法锁定打开面板前的单元格选区：" . err.Message)
     }
 
     return Map(
@@ -1968,6 +1976,10 @@ GetSpreadsheetSelectionContext(title) {
 
     if IsObject(AutomationSpreadsheetSelectionContext) {
         snapshot := AutomationSpreadsheetSelectionContext
+        if snapshot.Has("error") {
+            MsgBox(snapshot["error"] . "`n请回到表格退出单元格编辑状态，重新选中后打开面板。", title, "Icon!")
+            return ""
+        }
         try {
             app := TryGetActiveComObject(snapshot["progId"])
             if !IsObject(app)
