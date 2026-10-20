@@ -2,6 +2,8 @@
 
 这是一个 AutoHotkey v2 全局自动化入口。按 `Ctrl+Shift+E` 可以在任意界面打开功能面板，面板按类别组织工具；表格工具同时支持 Microsoft Excel 和 WPS 表格。
 
+面板沿用 Oracle-Sync 桌宠（`D:\Syncthing\Oracle-Sync\tools\pets`）右键菜单的浅色卡片风格：白底、浅灰描边圆角按钮，按钮左侧是 Segoe MDL2 线性图标，悬停时底色变浅灰、图标变蓝并显示手形光标，顶部选区信息行为浅灰底；左侧边栏切换“表格工具 / 打开图纸 / 批量改名 / 文件处理 / 使用说明”，右侧顶部显示打开前识别到的选区（工作簿、工作表和单元格地址，或选中的文件）。打开时自动切到对应页面：表格选区进入“表格工具”，选中 DWG 进入“打开图纸”，全是 PDF/Word/Excel 文件进入“文件处理”，其他文件进入“批量改名”；没有选区时回到上次使用的页面。没有对应选区的按钮会变灰，撤销按钮在没有可撤销操作时也会变灰。`Esc` 关闭面板，`Ctrl+Tab` / `Ctrl+Shift+Tab` 切换页面。界面组件位于 `src\modern-panel-ui.ahk`：所有元素用 GDI+ 画进预乘透明通道的画布，经 BufferedPaint 交给 DWM 合成，点击与悬停按坐标自行判断，无第三方依赖；另保留两套主题，可在脚本里调用 `ModernPanelTheme("glass")`（仿 iOS 26 液态玻璃）或 `ModernPanelTheme("light")`（浅灰底白色圆角）切换，分享版共用同一套组件；表格按钮区由 `@@SPREADSHEET_BUTTONS_BEGIN/END` 标记，供 `packaging\build-share.py` 提取。
+
 ## 功能
 
 - `Ctrl+Shift+E`：全局打开自动化工具面板
@@ -97,7 +99,7 @@
 
 ## 批量修改文件说明
 
-先在资源管理器或桌面选中文件，再按 `Ctrl+Shift+E` 打开面板，切换到“批量修改文件”选项卡。面板打开时会保存当时的文件选区；更改选区后重新打开面板即可更新快照。
+先在资源管理器或桌面选中文件，再按 `Ctrl+Shift+E` 打开面板，在左侧边栏进入“批量改名”页（选中普通文件时会自动进入）。面板打开时会保存当时的文件选区；更改选区后重新打开面板即可更新快照。
 
 批量改名前会显示预览并要求确认。脚本会保持原扩展名不变，并在执行前检查：
 
@@ -113,7 +115,7 @@
 
 ## 文件处理说明
 
-PDF 合并、Word 转 PDF 和 Excel 转 PDF 位于单独的“文件处理”选项卡。先在资源管理器或桌面选中文件，再打开面板并切换到该页。
+PDF 合并、Word 转 PDF 和 Excel 转 PDF 位于“文件处理”页。先在资源管理器或桌面选中文件，再打开面板；选中的全是 PDF、Word 或 Excel 时会自动进入该页。
 
 “合并选中的 PDF”要求至少选中两个 PDF。合并顺序与资源管理器/桌面当前选中顺序一致，输出到第一份 PDF 所在文件夹；文件名可以输入或直接使用默认的“合并结果.pdf”。若目标文件已存在，会先询问是否覆盖；确认后先写入临时文件，成功后再替换目标。源 PDF 不会修改。此功能调用系统 `python`，并要求该 Python 环境安装 `pypdf`。
 
@@ -158,4 +160,4 @@ Set-Location E:\366256\vibecoding\AutoHotkey\projects\excel-ahk-command-panel
 
 ## 后续添加功能
 
-新增工具时，优先在 `src\excel-command-panel.ahk` 中新增函数，然后在 `ShowAutomationPanel()` 对应分类选项卡里增加按钮。统一入口只保留 `Ctrl+Shift+E`。
+新增工具时，优先在 `src\excel-command-panel.ahk` 中新增函数，然后在 `ShowAutomationPanel()` 对应页面里用 `ModernPanelRow` 增加按钮。统一入口只保留 `Ctrl+Shift+E`。

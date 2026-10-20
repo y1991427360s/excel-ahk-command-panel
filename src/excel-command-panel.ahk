@@ -3,12 +3,15 @@
 Persistent
 #Include spreadsheet-export.ahk
 #Include spreadsheet-numeric-offset.ahk
+#Include modern-panel-ui.ahk
 
 global AutomationPanelGui := ""
 global AutomationContextHwnd := 0
 global AutomationSelectedFilePaths := []
 global AutomationSpreadsheetSelectionContext := ""
 global ExcelCommandUndoStack := []
+global AutomationPanelLastPage := "table"
+global AutomationPanelUi := ""
 global SelectedDwgPath := ""
 global CopyQExe := "D:\CopyQ\copyq.exe"
 global AaLspPath := "D:\Syncthing\Oracle-Sync\LISP\ZW-auto_lisp\AA整合版本.lsp"
@@ -44,10 +47,20 @@ LogPanelDiagnostic(eventName, details := "") {
 
 #HotIf WinActive("ahk_exe EXCEL.EXE") && ExcelCommandUndoStack.Length > 0
 $^z::UndoExcelCommandPanelAction()
+#HotIf AutomationPanelIsActive()
+^Tab::CycleAutomationPanelPage(1)
+^+Tab::CycleAutomationPanelPage(-1)
 #HotIf
+
+AutomationPanelIsActive() {
+    global AutomationPanelGui
+    try return IsObject(AutomationPanelGui) && WinActive("ahk_id " . AutomationPanelGui.Hwnd)
+    return false
+}
 
 ShowAutomationPanel() {
     global AutomationPanelGui
+    global AutomationPanelUi
     global AutomationContextHwnd
     global AutomationSelectedFilePaths
     global AutomationSpreadsheetSelectionContext
@@ -74,142 +87,235 @@ ShowAutomationPanel() {
     if IsObject(AutomationPanelGui)
         try AutomationPanelGui.Destroy()
 
-    panel := Gui("+AlwaysOnTop", "自动化工具面板")
-    panel.SetFont("s10", "Microsoft YaHei UI")
-    panel.MarginX := 16
-    panel.MarginY := 14
+    panelContext := DescribeAutomationPanelContext()
+    fileCount := AutomationSelectedFilePaths.Length
+    hasFiles := fileCount > 0
+    hasDwg := SelectedDwgPath != ""
+    colors := ModernPanelColors()
 
-    tabs := panel.AddTab3("x16 y14 w430 h446", ["打开图纸", "表格工具", "批量修改文件", "文件处理", "说明"])
+    ui := ModernPanelCreate("自动化工具面板")
+    panel := ui["gui"]
 
-    tabs.UseTab(1)
-    if (SelectedDwgPath != "") {
+    ; 左侧边栏：浅灰底 + 应用名 + 带图标的页面导航（与桌宠右键菜单同一套配色和图标）
+    if (colors["sidebar"] != "") {
+        sidebarStyle := ModernPanelStyle(colors["sidebar"], colors["text"])
+        sidebarStyle["radius"] := 0
+        ModernPanelLabelAt(ui, 0, 0, 188, 540, "", sidebarStyle)
+    }
+    ModernPanelLabelAt(ui, 26, 20, 146, 26, "自动化工具", ModernPanelTextStyle(colors["text"], 13, true))
+    ModernPanelLabelAt(ui, 26, 46, 146, 18, "Ctrl+Shift+E", ModernPanelTextStyle(colors["secondary"], 9))
+
+    navItems := Map()
+    navY := 84
+    for page in AutomationPanelPages() {
+        navItems[page["key"]] := ModernPanelAddElement(ui, 14, navY, 160, 34, page["title"]
+            , AutomationPanelNavStyle("", colors["text"], false, page["icon"], colors["icon"]), ""
+            , SelectAutomationPanelPage.Bind(ui, page["key"], true))
+        navItems[page["key"]]["icon"] := page["icon"]
+        navY += 38
+    }
+    ui["nav"] := navItems
+
+    ModernPanelLabelAt(ui, 26, 500, 160, 20, "Esc 关闭 · Ctrl+Tab 切换", ModernPanelTextStyle(colors["secondary"], 9))
+    separatorStyle := ModernPanelStyle(colors["separator"], colors["text"])
+    separatorStyle["radius"] := 0
+    ModernPanelLabelAt(ui, 188, 0, 1, 540, "", separatorStyle)
+
+    ; 右侧顶部信息行：识别到的选区（同桌宠菜单顶部的状态信息行）
+    infoStyle := ModernPanelStyle(colors["info"], colors["text"])
+    ModernPanelLabelAt(ui, 208, 16, 432, 62, "", infoStyle)
+    ModernPanelLabelAt(ui, 222, 16, 20, 62, ""
+        , ModernPanelDecorate(ModernPanelTextStyle(colors["icon"]), "", Chr(panelContext["isError"] ? 0xE7BA : 0xE946)
+            , panelContext["isError"] ? colors["error"] : colors["icon"]))
+    ModernPanelLabelAt(ui, 250, 24, 380, 24, panelContext["title"], ModernPanelTextStyle(colors["text"], 11, true))
+    ModernPanelLabelAt(ui, 250, 48, 380, 24, panelContext["detail"]
+        , ModernPanelTextStyle(panelContext["isError"] ? colors["error"] : colors["secondary"], 9))
+
+    contentX := 208
+    contentY := 92
+    contentW := 432
+
+    ModernPanelBeginPage(ui, "table", contentX, contentY, contentW)
+    tableEnabled := true
+    ; @@SPREADSHEET_BUTTONS_BEGIN
+    ModernPanelSection(ui, "文本")
+    ModernPanelRow(ui
+        , ["添加前缀", AddTextToExcelSelection.Bind("prefix"), tableEnabled, Chr(0xE710)]
+        , ["添加后缀", AddTextToExcelSelection.Bind("suffix"), tableEnabled, Chr(0xE710)])
+    ModernPanelRow(ui
+        , ["删除前端字符", RemoveTextFromExcelSelection.Bind("start"), tableEnabled, Chr(0xE738)]
+        , ["删除末尾字符", RemoveTextFromExcelSelection.Bind("end"), tableEnabled, Chr(0xE738)])
+    ModernPanelRow(ui, ["删除括号内容并合并换行", RemoveBracketTextFromExcelSelection, tableEnabled, Chr(0xE74D)])
+    ModernPanelSpace(ui, 6)
+    ModernPanelSection(ui, "整理")
+    ModernPanelRow(ui
+        , ["去重整理", DedupeAndGroupExcelSelectedColumn, tableEnabled, Chr(0xE71C)]
+        , ["按电缆截面排序", SortCableRowsByCrossSection, tableEnabled, Chr(0xE8CB)])
+    ModernPanelRow(ui
+        , ["合并相同内容并居中", MergeIdenticalSpreadsheetCells, tableEnabled, Chr(0xE8C8)]
+        , ["拆分合并单元格并填充", SplitMergedSpreadsheetCellsAndFill, tableEnabled, Chr(0xE8C6)])
+    ModernPanelSpace(ui, 6)
+    ModernPanelSection(ui, "数字与其他")
+    ModernPanelRow(ui
+        , ["数字向上取十位", RoundSpreadsheetSelectionUpToTen, tableEnabled, Chr(0xE8EF)]
+        , ["数字批量加减", OffsetSpreadsheetSelectionNumbers, tableEnabled, Chr(0xE70F)])
+    ModernPanelRow(ui
+        , ["导出选区信息（给 AI）", ExportSpreadsheetSelection, tableEnabled, Chr(0xE72D)]
+        , ["撤销上次操作" . (ExcelCommandUndoStack.Length ? "（" . ExcelCommandUndoStack.Length . "）" : "")
+            , UndoExcelCommandPanelAction, tableEnabled && ExcelCommandUndoStack.Length > 0, Chr(0xE7A7)])
+    ; @@SPREADSHEET_BUTTONS_END
+
+    ModernPanelBeginPage(ui, "dwg", contentX, contentY, contentW)
+    ModernPanelSection(ui, "当前图纸")
+    if hasDwg {
         SplitPath(SelectedDwgPath, &dwgName)
-        panel.AddText("x34 y58 w390 c666666", "当前选中的 DWG：")
-        panel.AddEdit("x34 y82 w390 h48 ReadOnly -Wrap", dwgName)
+        ModernPanelCard(ui, dwgName, "", Chr(0xE8A5))
     } else {
-        panel.AddText("x34 y58 w390 c666666", "请先在资源管理器或桌面选中一个 .dwg 文件，再按 Ctrl+Shift+E。")
+        ModernPanelCard(ui, "未选中 DWG 文件", colors["secondary"], Chr(0xE8A5))
     }
+    ModernPanelSection(ui, "打开方式")
+    ModernPanelRow(ui, ["AutoCAD 2018", OpenSelectedDwg.Bind("autocad"), hasDwg, Chr(0xE8E5)]
+        , ["中望 CAD 2026", OpenSelectedDwg.Bind("zwcad"), hasDwg, Chr(0xE8E5)])
+    ModernPanelRow(ui, ["CAD快速看图", OpenSelectedDwg.Bind("quickview"), hasDwg, Chr(0xE890)])
+    ModernPanelSpace(ui, 6)
+    ModernPanelSection(ui, "重新加载 AA整合版本.lsp")
+    ModernPanelRow(ui, ["中望 CAD", ReloadZwcadAaLsp, true, Chr(0xE72C)], ["AutoCAD", ReloadAutocadAaLsp, true, Chr(0xE72C)])
+    ModernPanelNote(ui, "打开图纸只把选中文件交给对应软件；重载插件会通知已运行的中望 CAD 或 AutoCAD 重新加载各自的 AA整合版本.lsp。")
 
-    autoCadButton := panel.AddButton("x34 y148 w390 h42", "使用 AutoCAD 2018 打开")
-    autoCadButton.OnEvent("Click", (*) => RunPanelCommand(OpenSelectedDwg.Bind("autocad")))
+    ModernPanelBeginPage(ui, "rename", contentX, contentY, contentW)
+    ModernPanelSection(ui, "添加")
+    ModernPanelRow(ui, ["添加固定前缀", AddFixedTextToSelectedFileNames.Bind("prefix"), hasFiles, Chr(0xE710)]
+        , ["添加固定后缀", AddFixedTextToSelectedFileNames.Bind("suffix"), hasFiles, Chr(0xE710)])
+    ModernPanelRow(ui, ["按顺序添加数字前缀", AddSequentialNumberPrefixToSelectedFileNames, hasFiles, Chr(0xE8FD)])
+    ModernPanelSpace(ui, 6)
+    ModernPanelSection(ui, "删除与替换")
+    ModernPanelRow(ui, ["删除前端文字", RemoveTextFromSelectedFileNames.Bind("start"), hasFiles, Chr(0xE738)]
+        , ["删除末尾文字", RemoveTextFromSelectedFileNames.Bind("end"), hasFiles, Chr(0xE738)])
+    ModernPanelRow(ui, ["替换文件名中的文字", ReplaceCustomTextInSelectedFileNames, hasFiles, Chr(0xE8AC)]
+        , ["将 ML 替换为目录", ReplaceTextInSelectedFileNames, hasFiles, Chr(0xE8B7)])
+    ModernPanelNote(ui, hasFiles
+        ? "将处理选中的 " . fileCount . " 个文件，文件夹会被跳过。改名前会显示预览并要求确认，扩展名保持不变。"
+        : "请先在资源管理器或桌面选中文件，再按 Ctrl+Shift+E。改名前会显示预览并要求确认。")
 
-    zwCadButton := panel.AddButton("x34 y202 w390 h42", "使用中望 CAD 2026 打开")
-    zwCadButton.OnEvent("Click", (*) => RunPanelCommand(OpenSelectedDwg.Bind("zwcad")))
+    ModernPanelBeginPage(ui, "files", contentX, contentY, contentW)
+    ModernPanelSection(ui, "转换与合并")
+    ModernPanelRow(ui, ["合并选中的 PDF", MergeSelectedPdfFiles, hasFiles, Chr(0xE8F1)])
+    ModernPanelRow(ui, ["Word 转 PDF", ConvertSelectedWordFilesToPdf, hasFiles, Chr(0xE8A5)]
+        , ["Excel 转 PDF", ConvertSelectedExcelFilesToPdf, hasFiles, Chr(0xE80A)])
+    ModernPanelNote(ui, "PDF 合并后保存到首个 PDF 所在文件夹；Word、Excel 转换后保存为同目录同名 PDF，Excel 会导出整个工作簿。覆盖已有 PDF 前会先确认。", 3)
 
-    quickViewButton := panel.AddButton("x34 y256 w390 h42", "使用 CAD快速看图 打开")
-    quickViewButton.OnEvent("Click", (*) => RunPanelCommand(OpenSelectedDwg.Bind("quickview")))
+    ModernPanelBeginPage(ui, "help", contentX, contentY, contentW)
+    ModernPanelSection(ui, "使用方法")
+    ModernPanelNote(ui
+        , "1. 先在 Excel / WPS 里选中单元格，或在资源管理器、桌面里选中文件。`n"
+        . "2. 按 Ctrl+Shift+E 打开面板，会自动切到对应页面。`n"
+        . "3. 点击按钮执行；没有对应选区的按钮会变灰。", 4)
+    ModernPanelSection(ui, "撤销与保存")
+    ModernPanelNote(ui, "表格操作不会自动保存。Excel 中可直接 Ctrl+Z 撤销面板操作；WPS 请用“表格工具”里的撤销按钮。", 3)
 
-    if (SelectedDwgPath = "") {
-        autoCadButton.Enabled := false
-        zwCadButton.Enabled := false
-        quickViewButton.Enabled := false
-    }
+    SelectAutomationPanelPage(ui, panelContext["page"], false)
 
-    reloadLspButton := panel.AddButton("x34 y310 w190 h42", "重新加载插件 (中望 CAD)")
-    reloadLspButton.OnEvent("Click", (*) => RunPanelCommand(ReloadZwcadAaLsp))
-
-    reloadAcadLspButton := panel.AddButton("x234 y310 w190 h42", "重新加载插件 (AutoCAD)")
-    reloadAcadLspButton.OnEvent("Click", (*) => RunPanelCommand(ReloadAutocadAaLsp))
-
-    panel.AddText("x34 y364 w390 c666666", "说明：打开图纸只转交选中文件；重载插件会直接通知运行中的中望 CAD 或 AutoCAD 重新加载各自的 AA整合版本.lsp。")
-
-    tabs.UseTab(2)
-    panel.AddText("x34 y58 w390 c666666", "处理当前 Excel 或 WPS 表格选区。")
-
-    prefixButton := panel.AddButton("x34 y90 w190 h38", "添加前缀")
-    prefixButton.OnEvent("Click", (*) => RunPanelCommand(AddTextToExcelSelection.Bind("prefix")))
-
-    suffixButton := panel.AddButton("x234 y90 w190 h38", "添加后缀")
-    suffixButton.OnEvent("Click", (*) => RunPanelCommand(AddTextToExcelSelection.Bind("suffix")))
-
-    trimStartButton := panel.AddButton("x34 y136 w190 h38", "删除前端字符")
-    trimStartButton.OnEvent("Click", (*) => RunPanelCommand(RemoveTextFromExcelSelection.Bind("start")))
-
-    trimEndButton := panel.AddButton("x234 y136 w190 h38", "删除末尾字符")
-    trimEndButton.OnEvent("Click", (*) => RunPanelCommand(RemoveTextFromExcelSelection.Bind("end")))
-
-    removeBracketButton := panel.AddButton("x34 y182 w390 h38", "删除括号内容并合并换行")
-    removeBracketButton.OnEvent("Click", (*) => RunPanelCommand(RemoveBracketTextFromExcelSelection))
-
-    dedupeButton := panel.AddButton("x34 y228 w190 h38", "去重整理")
-    dedupeButton.OnEvent("Click", (*) => RunPanelCommand(DedupeAndGroupExcelSelectedColumn))
-
-    cableSortButton := panel.AddButton("x234 y228 w190 h38", "按电缆截面排序")
-    cableSortButton.OnEvent("Click", (*) => RunPanelCommand(SortCableRowsByCrossSection))
-
-    mergeIdenticalButton := panel.AddButton("x34 y274 w390 h38", "合并相同内容并居中")
-    mergeIdenticalButton.OnEvent("Click", (*) => RunPanelCommand(MergeIdenticalSpreadsheetCells))
-
-    splitMergedButton := panel.AddButton("x34 y320 w390 h38", "拆分合并单元格并填充")
-    splitMergedButton.OnEvent("Click", (*) => RunPanelCommand(SplitMergedSpreadsheetCellsAndFill))
-
-    roundUpButton := panel.AddButton("x34 y366 w190 h34", "数字向上取十位")
-    roundUpButton.OnEvent("Click", (*) => RunPanelCommand(RoundSpreadsheetSelectionUpToTen))
-
-    undoButton := panel.AddButton("x234 y366 w190 h34", "撤销上次表格操作")
-    undoButton.OnEvent("Click", (*) => RunPanelCommand(UndoExcelCommandPanelAction))
-
-    offsetButton := panel.AddButton("x34 y408 w190 h34", "数字批量加减")
-    offsetButton.OnEvent("Click", (*) => RunPanelCommand(OffsetSpreadsheetSelectionNumbers))
-
-    exportButton := panel.AddButton("x234 y408 w190 h34", "导出选区信息（给 AI）")
-    exportButton.OnEvent("Click", (*) => RunPanelCommand(ExportSpreadsheetSelection))
-
-    tabs.UseTab(3)
-    panel.AddText("x34 y58 w390 c666666", "先在资源管理器或桌面选中文件，再执行下面的批量改名。")
-
-    filePrefixButton := panel.AddButton("x34 y90 w390 h38", "给选中文件名添加固定前缀")
-    filePrefixButton.OnEvent("Click", (*) => RunPanelCommand(AddFixedTextToSelectedFileNames.Bind("prefix")))
-
-    fileSuffixButton := panel.AddButton("x34 y136 w390 h38", "给选中文件名添加固定后缀")
-    fileSuffixButton.OnEvent("Click", (*) => RunPanelCommand(AddFixedTextToSelectedFileNames.Bind("suffix")))
-
-    numberPrefixButton := panel.AddButton("x34 y182 w390 h38", "按顺序添加数字前缀")
-    numberPrefixButton.OnEvent("Click", (*) => RunPanelCommand(AddSequentialNumberPrefixToSelectedFileNames))
-
-    trimFileEndButton := panel.AddButton("x34 y228 w390 h38", "删除文件名末尾文字")
-    trimFileEndButton.OnEvent("Click", (*) => RunPanelCommand(RemoveTextFromSelectedFileNames.Bind("end")))
-
-    trimFileStartButton := panel.AddButton("x34 y274 w390 h38", "删除文件名前端文字")
-    trimFileStartButton.OnEvent("Click", (*) => RunPanelCommand(RemoveTextFromSelectedFileNames.Bind("start")))
-
-    replaceFileTextButton := panel.AddButton("x34 y320 w390 h38", "将 ML 替换为目录")
-    replaceFileTextButton.OnEvent("Click", (*) => RunPanelCommand(ReplaceTextInSelectedFileNames))
-
-    replaceCustomFileTextButton := panel.AddButton("x34 y366 w390 h38", "替换文件名中的文字")
-    replaceCustomFileTextButton.OnEvent("Click", (*) => RunPanelCommand(ReplaceCustomTextInSelectedFileNames))
-
-    panel.AddText("x34 y410 w390 c666666", "改名前会显示预览并要求确认；扩展名保持不变。")
-
-    tabs.UseTab(4)
-    panel.AddText("x34 y58 w390 c666666", "先在资源管理器或桌面选中文件，再选择对应的文件处理工具。")
-
-    mergePdfButton := panel.AddButton("x34 y90 w390 h38", "合并选中的 PDF")
-    mergePdfButton.OnEvent("Click", (*) => RunPanelCommand(MergeSelectedPdfFiles))
-
-    wordToPdfButton := panel.AddButton("x34 y136 w390 h38", "Word 转 PDF")
-    wordToPdfButton.OnEvent("Click", (*) => RunPanelCommand(ConvertSelectedWordFilesToPdf))
-
-    excelToPdfButton := panel.AddButton("x34 y182 w390 h38", "Excel 转 PDF")
-    excelToPdfButton.OnEvent("Click", (*) => RunPanelCommand(ConvertSelectedExcelFilesToPdf))
-
-    panel.AddText("x34 y236 w390 c666666", "PDF 合并后保存到首个 PDF 所在文件夹；Word、Excel 转换后保存为同目录同名 PDF。Excel 会导出整个工作簿。")
-
-    tabs.UseTab(5)
-    panel.AddText("x34 y58 w390", "快捷键：Ctrl+Shift+E")
-    panel.AddText("x34 y90 w390", "选中 DWG 后打开面板，可选择 AutoCAD、中望 CAD 或 CAD快速看图。")
-    panel.AddText("x34 y132 w390", "图纸和文件工具均支持资源管理器与桌面选区。")
-    panel.AddText("x34 y174 w390", "为便于迁移，安装脚本会直接启动本项目 src 里的主脚本，不再复制到用户文档目录。")
-
-    tabs.UseTab()
     panelCreatedTime := A_TickCount
-    closeButton := panel.AddButton("x16 y472 w430 h34", "关闭")
-    closeButton.OnEvent("Click", (*) => panel.Hide())
     panel.OnEvent("Close", (*) => panel.Hide())
     panel.OnEvent("Escape", (*) => (A_TickCount - panelCreatedTime > 400) ? panel.Hide() : 0)
 
     AutomationPanelGui := panel
-    panel.Show("w462 h522 Center")
+    AutomationPanelUi := ui
+    panel.Show("w656 h540 Center")
+}
+
+AutomationPanelPages() {
+    static pages := [
+        Map("key", "table", "title", "表格工具", "icon", Chr(0xE80A)),
+        Map("key", "dwg", "title", "打开图纸", "icon", Chr(0xE8E5)),
+        Map("key", "rename", "title", "批量改名", "icon", Chr(0xE8AC)),
+        Map("key", "files", "title", "文件处理", "icon", Chr(0xE8A5)),
+        Map("key", "help", "title", "使用说明", "icon", Chr(0xE897))
+    ]
+    return pages
+}
+
+SelectAutomationPanelPage(ui, page, remember := true, *) {
+    global AutomationPanelLastPage
+    colors := ModernPanelColors()
+    for key, item in ui["nav"] {
+        if (key = page) {
+            item["style"] := AutomationPanelNavStyle(colors["navSelected"], colors["text"], true, item["icon"], colors["accent"])
+            item["hover"] := ""
+        } else {
+            item["style"] := AutomationPanelNavStyle("", colors["text"], false, item["icon"], colors["icon"])
+            item["hover"] := AutomationPanelNavStyle(colors["tileHover"], colors["text"], false, item["icon"], colors["iconHover"])
+        }
+    }
+    ModernPanelShowPage(ui, page)
+    ; “使用说明”不记忆，避免下次无选区时直接停在说明页。
+    if (remember && page != "help")
+        AutomationPanelLastPage := page
+}
+
+; 侧栏导航项：选中与否文字都保持同样的左内边距，避免切换时文字跳动。
+AutomationPanelNavStyle(fill, textColor, bold := false, icon := "", iconColor := "") {
+    style := ModernPanelDecorate(ModernPanelStyle(fill, textColor, bold, "left"), "", icon, iconColor)
+    style["padding"] := 12
+    return style
+}
+
+CycleAutomationPanelPage(step) {
+    global AutomationPanelUi
+    pages := AutomationPanelPages()
+    index := 1
+    for i, page in pages
+        if (page["key"] = AutomationPanelUi["current"])
+            index := i
+    index := Mod(index - 1 + step + pages.Length, pages.Length) + 1
+    SelectAutomationPanelPage(AutomationPanelUi, pages[index]["key"])
+}
+
+; 根据打开面板前的选区决定顶部状态文字和默认页面：表格优先，其次 DWG、文件，最后回到上次使用的页面。
+DescribeAutomationPanelContext() {
+    global AutomationSelectedFilePaths
+    global AutomationSpreadsheetSelectionContext
+    global SelectedDwgPath
+    global AutomationPanelLastPage
+
+    snapshot := AutomationSpreadsheetSelectionContext
+    if IsObject(snapshot) {
+        if snapshot.Has("error")
+            return Map("title", "表格选区读取失败", "detail", snapshot["error"], "isError", true, "page", "table")
+        return Map(
+            "title", snapshot["workbookName"],
+            "detail", snapshot["name"] . " · 工作表 " . snapshot["worksheetName"] . " · 选区 " . StrReplace(snapshot["selectionAddress"], "$"),
+            "isError", false,
+            "page", "table"
+        )
+    }
+
+    fileCount := AutomationSelectedFilePaths.Length
+    if (fileCount > 0) {
+        documentCount := 0
+        for filePath in AutomationSelectedFilePaths {
+            SplitPath(filePath, , , &extension)
+            if RegExMatch(extension, "i)^(pdf|docx?|docm|xlsx?|xlsm|xlsb)$")
+                documentCount += 1
+        }
+        SplitPath(AutomationSelectedFilePaths[1], &firstName)
+        detail := fileCount = 1 ? firstName : firstName . " 等 " . fileCount . " 个文件"
+        if (SelectedDwgPath != "")
+            return Map("title", "已选中 DWG 图纸", "detail", detail, "isError", false, "page", "dwg")
+        return Map(
+            "title", "已选中 " . fileCount . " 个文件",
+            "detail", detail,
+            "isError", false,
+            "page", documentCount = fileCount ? "files" : "rename"
+        )
+    }
+
+    return Map(
+        "title", "未检测到选区",
+        "detail", "先在 Excel / WPS 或资源管理器中选中内容，再按 Ctrl+Shift+E。",
+        "isError", false,
+        "page", AutomationPanelLastPage
+    )
 }
 
 RoundSpreadsheetSelectionUpToTen() {
