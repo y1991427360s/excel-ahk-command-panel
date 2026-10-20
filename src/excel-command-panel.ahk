@@ -79,6 +79,8 @@ ShowAutomationPanel() {
         AutomationSelectedFilePaths := DeduplicateSelectedFilePaths(
             GetSelectedFilePathsFromClipboard(AutomationContextHwnd)
         )
+    else
+        AutomationSelectedFilePaths := GetProjectAtlasSelectedFiles(AutomationContextHwnd)
     LogPanelDiagnostic("面板选区快照", "pathCount=" . AutomationSelectedFilePaths.Length
         . (AutomationSelectedFilePaths.Length ? "`r`n" . JoinLines(AutomationSelectedFilePaths) : "`r`n快照为空"))
     AutomationSpreadsheetSelectionContext := CaptureSpreadsheetSelectionContext(AutomationContextHwnd)
@@ -1134,6 +1136,30 @@ SpreadsheetValuesExactlyEqual(left, right) {
     try return left == right
     catch
         return false
+}
+
+; 「项目总览」把选中的图纸写入 %APPDATA%\项目总览\selected-cad.txt：第一行是写入者的进程 ID，其后每行一个路径。
+; 只有前台窗口的进程 ID 与第一行一致时才采用，既不依赖 exe 名称（开发模式也可用），也能排除程序崩溃后的残留选区。
+GetProjectAtlasSelectedFiles(hwnd) {
+    selectionFile := EnvGet("APPDATA") . "\项目总览\selected-cad.txt"
+    if !FileExist(selectionFile)
+        return []
+    try {
+        windowPid := WinGetPID("ahk_id " . hwnd)
+        lines := StrSplit(FileRead(selectionFile, "UTF-8"), "`n", "`r")
+    } catch
+        return []
+    if (lines.Length < 2 || Trim(lines[1]) != String(windowPid))
+        return []
+    paths := []
+    Loop lines.Length - 1 {
+        filePath := Trim(lines[A_Index + 1])
+        if (filePath != "" && FileExist(filePath))
+            paths.Push(filePath)
+    }
+    if (paths.Length > 0)
+        LogPanelDiagnostic("项目总览选区", JoinLines(paths))
+    return paths
 }
 
 GetSelectedDwgPath() {
