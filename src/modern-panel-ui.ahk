@@ -93,15 +93,23 @@ ModernPanelRegistry() {
     return panels
 }
 
-ModernPanelCreate(title, options := "+AlwaysOnTop -MinimizeBox -MaximizeBox") {
+; keep 为真表示常驻小窗（如 CAD 结果卡片）：不清掉别的面板，打开主面板时也不会被清掉，由创建方自己销毁。
+ModernPanelCreate(title, options := "+AlwaysOnTop -MinimizeBox -MaximizeBox", keep := false) {
     static hooked := false
     colors := ModernPanelColors()
 
-    ; 每次只保留一个面板，释放旧画布
+    ; 普通面板每次只保留一个，释放旧画布；常驻小窗不受影响
     registry := ModernPanelRegistry()
-    for hwnd, oldUi in registry
-        ModernPanelReleaseCanvas(oldUi)
-    registry.Clear()
+    if !keep {
+        stale := []
+        for hwnd, oldUi in registry
+            if !(oldUi.Has("keep") && oldUi["keep"])
+                stale.Push(hwnd)
+        for hwnd in stale {
+            ModernPanelReleaseCanvas(registry[hwnd])
+            registry.Delete(hwnd)
+        }
+    }
 
     panel := Gui(options, title)
     panel.BackColor := colors["window"]
@@ -120,7 +128,7 @@ ModernPanelCreate(title, options := "+AlwaysOnTop -MinimizeBox -MaximizeBox") {
     }
 
     ui := Map("gui", panel, "elements", [], "page", "", "x", 0, "y", 0, "w", 0, "current", ""
-        , "hover", "", "pressed", "", "canvas", 0, "canvasW", 0, "canvasH", 0, "dirty", true)
+        , "hover", "", "pressed", "", "canvas", 0, "canvasW", 0, "canvasH", 0, "dirty", true, "keep", keep)
     registry[panel.Hwnd] := ui
     return ui
 }
@@ -452,7 +460,9 @@ ModernPanelDrawElement(graphics, x, y, width, height, text, style, scale, isGlas
     if (text = "" && style["icon"] = "")
         return
     format := 0, textBrush := 0
-    DllCall("gdiplus\GdipCreateStringFormat", "Int", style["wrap"] ? 0 : 0x1000, "Int", 0, "Ptr*", &format) ; 0x1000 NoWrap
+    ; 0x1000 NoWrap；样式带 lineLimit 时换行文字只画完整的行（0x2000 LineLimit），放不下的以省略号结尾
+    formatFlags := style["wrap"] ? ((style.Has("lineLimit") && style["lineLimit"]) ? 0x2000 : 0) : 0x1000
+    DllCall("gdiplus\GdipCreateStringFormat", "Int", formatFlags, "Int", 0, "Ptr*", &format)
     DllCall("gdiplus\GdipSetStringFormatAlign", "Ptr", format, "Int", style["align"] = "left" ? 0 : 1)
     DllCall("gdiplus\GdipSetStringFormatLineAlign", "Ptr", format, "Int", style["wrap"] ? 0 : 1)
     DllCall("gdiplus\GdipSetStringFormatTrimming", "Ptr", format, "Int", 3)   ; EllipsisCharacter

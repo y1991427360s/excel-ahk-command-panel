@@ -30,11 +30,14 @@ global AutomationSelectedFilePaths := []
 global CopyQExe := ""
 global SelectedDwgPath := ""
 global AaLspPath := ""
+global AcadAaLspPath := ""
 global CompatMode := "pretty"
 LogPanelDiagnostic(*) {
 }
 '@
 try {
+    $moduleHeader = "#Include " + (Join-Path $project 'src\spreadsheet-text-transform.ahk') + "`n#Include " + (Join-Path $project 'src\copyq-guard.ahk') + "`n"
+    $header = $moduleHeader + $header
     $testName = if ($SelectionSnapshot) { 'selection-snapshot-smoke.ahk' } else { 'split-compat-smoke.ahk' }
     [IO.File]::WriteAllText($temp, $header + "`n" + [IO.File]::ReadAllText((Join-Path $PSScriptRoot $testName)) + "`n" + $functions, [Text.UTF8Encoding]::new($true))
     $process = Start-Process -FilePath 'C:\Program Files\AutoHotkey\v2\AutoHotkey64.exe' -ArgumentList @('/ErrorStdOut', ('"' + $temp + '"')) -WindowStyle Hidden -PassThru -RedirectStandardOutput ($temp + '.log') -RedirectStandardError ($temp + '.error.log')

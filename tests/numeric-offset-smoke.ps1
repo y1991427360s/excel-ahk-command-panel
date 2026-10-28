@@ -1,4 +1,4 @@
-param([ValidateSet('excel', 'wps')][string]$Provider = 'excel')
+﻿param([ValidateSet('excel', 'wps')][string]$Provider = 'excel')
 $ErrorActionPreference = 'Stop'
 $projectDir = Split-Path -Parent $PSScriptRoot
 $sourcePath = Join-Path $projectDir 'src\excel-command-panel.ahk'
@@ -14,9 +14,12 @@ $outputPath = $tempPath + '.log'
 $errorPath = $tempPath + '.error.log'
 $exportPath = Join-Path $projectDir 'src\spreadsheet-export.ahk'
 $offsetPath = Join-Path $projectDir 'src\spreadsheet-numeric-offset.ahk'
+$textPath = Join-Path $projectDir 'src\spreadsheet-text-transform.ahk'
+$copyqPath = Join-Path $projectDir 'src\copyq-guard.ahk'
+$uiPath = Join-Path $projectDir 'src\modern-panel-ui.ahk'
 $globalsStart = $sourceText.IndexOf('global AutomationPanelGui :=')
 $globalsEnd = $sourceText.IndexOf('LogPanelDiagnostic("')
-$header = "#Requires AutoHotkey v2.0`n#SingleInstance Off`n#Warn All, StdOut`n#Warn LocalSameAsGlobal, Off`n#Include $exportPath`n#Include $offsetPath`n" + $sourceText.Substring($globalsStart, $globalsEnd - $globalsStart)
+$header = "#Requires AutoHotkey v2.0`n#SingleInstance Off`n#Warn All, StdOut`n#Warn LocalSameAsGlobal, Off`n#Include $exportPath`n#Include $offsetPath`n#Include $textPath`n#Include $copyqPath`n#Include $uiPath`n" + $sourceText.Substring($globalsStart, $globalsEnd - $globalsStart)
 $existingExcelIds = @(Get-Process EXCEL -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
 try {
     [IO.File]::WriteAllText($tempPath, $header + [IO.File]::ReadAllText($testPath) + "`n" + $sourceText.Substring($diagnosticStart, $diagnosticEnd - $diagnosticStart) + $sourceText.Substring($functionStart), [Text.UTF8Encoding]::new($true))

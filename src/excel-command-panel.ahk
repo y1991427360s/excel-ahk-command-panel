@@ -1,9 +1,13 @@
-#Requires AutoHotkey v2.0
+﻿#Requires AutoHotkey v2.0
 #SingleInstance Force
 Persistent
 #Include spreadsheet-export.ahk
 #Include spreadsheet-numeric-offset.ahk
+#Include spreadsheet-text-transform.ahk
+#Include copyq-guard.ahk
+#Include input-method-switch.ahk
 #Include modern-panel-ui.ahk
+#Include cad-report-card.ahk
 
 global AutomationPanelGui := ""
 global AutomationContextHwnd := 0
@@ -168,7 +172,7 @@ ShowAutomationPanel() {
     ; @@SPREADSHEET_BUTTONS_END
 
     ModernPanelBeginPage(ui, "dwg", contentX, contentY, contentW)
-    ModernPanelSection(ui, "当前图纸")
+    ModernPanelSection(ui, "选中的 DWG 文件")
     if hasDwg {
         SplitPath(SelectedDwgPath, &dwgName)
         ModernPanelCard(ui, dwgName, "", Chr(0xE8A5))
@@ -176,13 +180,23 @@ ShowAutomationPanel() {
         ModernPanelCard(ui, "未选中 DWG 文件", colors["secondary"], Chr(0xE8A5))
     }
     ModernPanelSection(ui, "打开方式")
-    ModernPanelRow(ui, ["AutoCAD 2018", OpenSelectedDwg.Bind("autocad"), hasDwg, Chr(0xE8E5)]
-        , ["中望 CAD 2026", OpenSelectedDwg.Bind("zwcad"), hasDwg, Chr(0xE8E5)])
-    ModernPanelRow(ui, ["CAD快速看图", OpenSelectedDwg.Bind("quickview"), hasDwg, Chr(0xE890)])
+    ModernPanelRow(ui, ["AutoCAD", OpenSelectedDwg.Bind("autocad"), hasDwg, Chr(0xE8E5)]
+        , ["中望 CAD", OpenSelectedDwg.Bind("zwcad"), hasDwg, Chr(0xE8E5)]
+        , ["快速看图", OpenSelectedDwg.Bind("quickview"), hasDwg, Chr(0xE890)])
+    ModernPanelSpace(ui, 6)
+    ; 关闭/保存类按钮单独成组，并用“文字联动”一组隔开重载插件按钮，避免重载时误点关闭
+    ModernPanelSection(ui, "CAD 里正在编辑的图纸")
+    ModernPanelRow(ui, ["强制关闭", ForceCloseActiveCadDrawing, true, Chr(0xE711)]
+        , ["保存并关闭", SaveAndCloseActiveCadDrawing, true, Chr(0xE74E)]
+        , ["保存并重开", SaveAndReopenActiveCadDrawing, true, Chr(0xE777)])
+    ModernPanelNote(ui, "作用于打开面板前所在 CAD 的当前图纸；强制关闭不保存、不确认。", 1)
+    ModernPanelSpace(ui, 6)
+    ModernPanelSection(ui, "文字联动标记（中望 CAD）")
+    ModernPanelRow(ui, ["查看文字标记 SXC", RunZwcadCommand.Bind("SXC", "查看文字标记"), true, Chr(0xE721)])
+    ModernPanelNote(ui, "执行 SXC：选文字或回车查全图，结果卡片里点条目定位。", 1)
     ModernPanelSpace(ui, 6)
     ModernPanelSection(ui, "重新加载 AA整合版本.lsp")
-    ModernPanelRow(ui, ["中望 CAD", ReloadZwcadAaLsp, true, Chr(0xE72C)], ["AutoCAD", ReloadAutocadAaLsp, true, Chr(0xE72C)])
-    ModernPanelNote(ui, "打开图纸只把选中文件交给对应软件；重载插件会通知已运行的中望 CAD 或 AutoCAD 重新加载各自的 AA整合版本.lsp。")
+    ModernPanelRow(ui, ["重载中望 CAD 插件", ReloadZwcadAaLsp, true, Chr(0xE72C)], ["重载 AutoCAD 插件", ReloadAutocadAaLsp, true, Chr(0xE72C)])
 
     ModernPanelBeginPage(ui, "rename", contentX, contentY, contentW)
     ModernPanelSection(ui, "添加")
@@ -205,6 +219,19 @@ ShowAutomationPanel() {
     ModernPanelRow(ui, ["Word 转 PDF", ConvertSelectedWordFilesToPdf, hasFiles, Chr(0xE8A5)]
         , ["Excel 转 PDF", ConvertSelectedExcelFilesToPdf, hasFiles, Chr(0xE80A)])
     ModernPanelNote(ui, "PDF 合并后保存到首个 PDF 所在文件夹；Word、Excel 转换后保存为同目录同名 PDF，Excel 会导出整个工作簿。覆盖已有 PDF 前会先确认。", 3)
+
+    ModernPanelBeginPage(ui, "ime", contentX, contentY, contentW)
+    ModernPanelSection(ui, "替代默认输入法")
+    currentTip := GetDefaultInputMethodOverride()
+    ModernPanelRow(ui, ["使用语言列表(推荐)" . (currentTip = "" ? "（当前）" : "")
+        , SetDefaultInputMethod.Bind("", "使用语言列表(推荐)"), currentTip != "", Chr(0xE8C4)])
+    for method in GetInstalledInputMethods() {
+        isCurrent := method["tip"] = currentTip
+        ModernPanelRow(ui, [method["name"] . (isCurrent ? "（当前）" : method["added"] ? "" : "（未添加）")
+            , SetDefaultInputMethod.Bind(method["tip"], method["name"], method["added"] ? "" : method["language"])
+            , !isCurrent, Chr(0xE765)])
+    }
+    ModernPanelNote(ui, "列表随安装的输入法自动更新；“未添加”的会先加入输入法列表再设为默认。切换后对新打开的窗口生效。", 3)
 
     ModernPanelBeginPage(ui, "help", contentX, contentY, contentW)
     ModernPanelSection(ui, "使用方法")
@@ -232,6 +259,7 @@ AutomationPanelPages() {
         Map("key", "dwg", "title", "打开图纸", "icon", Chr(0xE8E5)),
         Map("key", "rename", "title", "批量改名", "icon", Chr(0xE8AC)),
         Map("key", "files", "title", "文件处理", "icon", Chr(0xE8A5)),
+        Map("key", "ime", "title", "默认输入法", "icon", Chr(0xE765)),
         Map("key", "help", "title", "使用说明", "icon", Chr(0xE897))
     ]
     return pages
@@ -275,6 +303,7 @@ CycleAutomationPanelPage(step) {
 
 ; 根据打开面板前的选区决定顶部状态文字和默认页面：表格优先，其次 DWG、文件，最后回到上次使用的页面。
 DescribeAutomationPanelContext() {
+    global AutomationContextHwnd
     global AutomationSelectedFilePaths
     global AutomationSpreadsheetSelectionContext
     global SelectedDwgPath
@@ -310,6 +339,13 @@ DescribeAutomationPanelContext() {
             "isError", false,
             "page", documentCount = fileCount ? "files" : "rename"
         )
+    }
+
+    cadTarget := DetectAutomationContextCad()
+    if IsObject(cadTarget) {
+        windowTitle := ""
+        try windowTitle := WinGetTitle("ahk_id " . AutomationContextHwnd)
+        return Map("title", "当前窗口：" . cadTarget["name"], "detail", windowTitle, "isError", false, "page", "dwg")
     }
 
     return Map(
@@ -1197,8 +1233,7 @@ GetSelectedFilePathsFromClipboard(hwnd) {
         }
 
         if hasCopyQ {
-            RunWait('"' . CopyQExe . '" disable', , "Hide")
-            copyQDisabled := true
+            copyQDisabled := PauseCopyQForSelection(CopyQExe)
         }
 
         A_Clipboard := ""
@@ -1209,9 +1244,17 @@ GetSelectedFilePathsFromClipboard(hwnd) {
         LogPanelDiagnostic("读取剪贴板选区结束", "clipReady=" . clipReady . "; fileCount=" . selected.Length
             . (selected.Length ? "`r`n" . JoinLines(selected) : "`r`nCF_HDROP为空或剪贴板等待超时"))
     } finally {
-        A_Clipboard := savedClipboard
-        if copyQDisabled
-            RunWait('"' . CopyQExe . '" enable', , "Hide")
+        try {
+            A_Clipboard := savedClipboard
+        } finally {
+            if copyQDisabled {
+                try ResumeCopyQAfterSelection(CopyQExe, copyQDisabled)
+                catch as err {
+                    LogPanelDiagnostic("CopyQ恢复失败", err.Message)
+                    TrayTip("CopyQ 监控恢复失败，请检查 CopyQ 状态。", "自动化面板")
+                }
+            }
+        }
         LogPanelDiagnostic("选区读取清理", "clipboardRestored=1; copyQReenabled=" . copyQDisabled)
     }
 
@@ -1319,6 +1362,200 @@ ReloadAutocadAaLsp() {
     ReloadCadAaLsp("AutoCAD.Application", "AutoCAD", "AutoCAD 2018", AcadAaLspPath)
 }
 
+; 向中望 CAD 当前图纸发送一个插件命令并切到 CAD，命令中的选择交给用户在 CAD 里完成
+RunZwcadCommand(cmd, label, *) {
+    title := "中望 CAD · " . label
+    try cadApp := ComObjActive("ZWCAD.Application")
+    catch {
+        MsgBox("未检测到运行中的中望 CAD，请先启动中望 CAD 2026 并打开图纸。", title, "Icon!")
+        return
+    }
+    try {
+        doc := cadApp.ActiveDocument
+        if (doc.GetVariable("CMDACTIVE") != 0) {
+            MsgBox("中望 CAD 正在执行命令，请先按 Esc 结束当前命令再试。", title, "Icon!")
+            return
+        }
+        try WinActivate("ahk_exe ZWCAD.exe")
+        doc.SendCommand(cmd . "`n")
+    } catch as err {
+        MsgBox("向中望 CAD 发送 " . cmd . " 失败：`n" . err.Message . "`n`n如果插件没加载，可先点“重新加载 AA整合版本.lsp”。", title, "Icon!")
+    }
+}
+
+CadTargets() {
+    return [
+        Map("exe", "zwcad.exe", "progId", "ZWCAD.Application", "name", "中望 CAD"),
+        Map("exe", "acad.exe", "progId", "AutoCAD.Application", "name", "AutoCAD")
+    ]
+}
+
+; 打开面板前的前台窗口若属于中望 CAD 或 AutoCAD，返回对应目标，否则返回空
+DetectAutomationContextCad() {
+    global AutomationContextHwnd
+    if !AutomationContextHwnd
+        return ""
+    processName := ""
+    try processName := StrLower(WinGetProcessName("ahk_id " . AutomationContextHwnd))
+    for target in CadTargets() {
+        if (processName = target["exe"])
+            return target
+    }
+    return ""
+}
+
+; 连接要操作的 CAD：优先打开面板前所在的 CAD 窗口；不在 CAD 时只有一个 CAD 在运行才自动选它，两个都在运行不猜测
+GetActiveCadDocumentContext(title) {
+    target := DetectAutomationContextCad()
+    cadApp := ""
+    if IsObject(target) {
+        cadApp := TryGetActiveComObject(target["progId"])
+        if !IsObject(cadApp) {
+            MsgBox("无法连接到 " . target["name"] . "（" . target["progId"] . "）。", title, "Icon!")
+            return ""
+        }
+    } else {
+        found := []
+        for candidate in CadTargets() {
+            app := TryGetActiveComObject(candidate["progId"])
+            if IsObject(app)
+                found.Push(Map("target", candidate, "app", app))
+        }
+        if (found.Length = 0) {
+            MsgBox("没有找到正在运行的中望 CAD 或 AutoCAD。", title, "Icon!")
+            return ""
+        }
+        if (found.Length > 1) {
+            MsgBox("中望 CAD 和 AutoCAD 都在运行。请先切换到要操作的 CAD 窗口，再按 Ctrl+Shift+E。", title, "Icon!")
+            return ""
+        }
+        target := found[1]["target"]
+        cadApp := found[1]["app"]
+    }
+
+    doc := ""
+    try doc := cadApp.ActiveDocument
+    if !IsObject(doc) {
+        MsgBox(target["name"] . " 当前没有打开任何图纸。", title, "Icon!")
+        return ""
+    }
+    cmdActive := 0
+    try cmdActive := doc.GetVariable("CMDACTIVE")
+    if (cmdActive != 0) {
+        MsgBox(target["name"] . " 正在执行命令，请先按 Esc 结束当前命令再试。", title, "Icon!")
+        return ""
+    }
+    return Map("app", cadApp, "doc", doc, "target", target)
+}
+
+; 不保存、不确认，直接关闭当前图纸
+ForceCloseActiveCadDrawing(*) {
+    title := "强制关闭当前图纸"
+    context := GetActiveCadDocumentContext(title)
+    if !IsObject(context)
+        return
+    doc := context["doc"]
+    cadName := context["target"]["name"]
+
+    docName := ""
+    try docName := doc.Name
+
+    try {
+        doc.Close(false)
+    } catch as err {
+        MsgBox("关闭图纸“" . docName . "”失败：`n" . err.Message, title, "Icon!")
+        return
+    }
+    TrayTip("已关闭（未保存）：" . docName, cadName . " · " . title, "Iconi Mute")
+}
+
+; 保存当前图纸后关闭
+SaveAndCloseActiveCadDrawing(*) {
+    title := "保存并关闭"
+    context := SaveAndCloseCadDrawingNatively(title)
+    if !IsObject(context)
+        return
+    SplitPath(context["fullName"], &docName)
+    TrayTip("已保存并关闭：" . docName, context["target"]["name"] . " · " . title, "Iconi Mute")
+}
+
+; 保存当前图纸、关闭后按原路径重新打开
+SaveAndReopenActiveCadDrawing(*) {
+    title := "保存并重新打开"
+    context := SaveAndCloseCadDrawingNatively(title)
+    if !IsObject(context)
+        return
+    fullName := context["fullName"]
+    try {
+        context["app"].Documents.Open(fullName)
+    } catch as err {
+        MsgBox("图纸已保存并关闭，但重新打开失败，请手动打开：`n" . fullName . "`n`n" . err.Message, title, "Icon!")
+        return
+    }
+    try WinActivate("ahk_exe " . context["target"]["exe"])
+    SplitPath(fullName, &docName)
+    TrayTip("已保存并重新打开：" . docName, context["target"]["name"] . " · " . title, "Iconi Mute")
+}
+
+; 让 CAD 在自己的命令行里执行 QSAVE + CLOSE，并等待图纸关闭。
+; 不能从面板进程直接调用 COM 的 Document.Save()：2026-10-28 在中望 CAD 2026 上保存 26MB 图纸时直接崩溃，
+; 原生 QSAVE 在同一张图上正常。QSAVE 没存成功时 CLOSE 会弹出 CAD 自己的“是否保存”，不会静默丢修改。
+SaveAndCloseCadDrawingNatively(title) {
+    context := GetActiveCadDocumentContext(title)
+    if !IsObject(context)
+        return ""
+    doc := context["doc"]
+    cadName := context["target"]["name"]
+
+    fullName := ""
+    try fullName := doc.FullName
+    if (fullName = "" || !FileExist(fullName)) {
+        MsgBox("当前图纸还没有保存过文件，请先在 " . cadName . " 里“另存为”指定路径。", title, "Icon!")
+        return ""
+    }
+    readOnly := false
+    try readOnly := doc.ReadOnly
+    if readOnly {
+        MsgBox("图纸以只读方式打开，无法保存：`n" . fullName, title, "Icon!")
+        return ""
+    }
+
+    try {
+        doc.SendCommand("_.QSAVE`n_.CLOSE`n")
+    } catch as err {
+        MsgBox("向 " . cadName . " 发送保存命令失败：`n" . fullName . "`n`n" . err.Message, title, "Icon!")
+        return ""
+    }
+    if !WaitCadDocumentClosed(context["app"], fullName, 180000) {
+        MsgBox(cadName . " 还没有关闭图纸（可能仍在保存，或弹出了提示）：`n" . fullName . "`n`n请到 " . cadName . " 里查看。", title, "Icon!")
+        return ""
+    }
+    context["fullName"] := fullName
+    return context
+}
+
+WaitCadDocumentClosed(cadApp, fullName, timeoutMs) {
+    deadline := A_TickCount + timeoutMs
+    loop {
+        stillOpen := false
+        try {
+            for openDoc in cadApp.Documents {
+                if (StrLower(openDoc.FullName) = StrLower(fullName)) {
+                    stillOpen := true
+                    break
+                }
+            }
+        } catch {
+            stillOpen := true
+        }
+        if !stillOpen
+            return true
+        if (A_TickCount >= deadline)
+            return false
+        Sleep(300)
+    }
+}
+
 ReloadCadAaLsp(progId, cadName, cadFullName, lspPath) {
     title := cadName . " 插件重载"
 
@@ -1379,125 +1616,26 @@ AddTextToExcelSelection(position) {
     if (addedText = "")
         return
 
-    processed := 0
-    skippedBlank := 0
-    skippedFormula := 0
-    failed := 0
-
-    undoAction := CreateUndoAction(isPrefix ? "添加前缀" : "添加后缀", xl, context["kind"])
-    oldScreenUpdating := xl.ScreenUpdating
-    oldEnableEvents := xl.EnableEvents
-
     try {
-        xl.ScreenUpdating := false
-        xl.EnableEvents := false
-
-        for area in selection.Areas {
-            for cell in area.Cells {
-                try {
-                    if (cell.HasFormula) {
-                        skippedFormula += 1
-                        continue
-                    }
-
-                    value := cell.Value
-                    if (value = "") {
-                        skippedBlank += 1
-                        continue
-                    }
-
-                    AddUndoCell(undoAction, cell)
-                    cell.Value := isPrefix ? addedText . value : value . addedText
-                    processed += 1
-                } catch {
-                    failed += 1
-                }
-            }
-        }
-    } finally {
-        xl.ScreenUpdating := oldScreenUpdating
-        xl.EnableEvents := oldEnableEvents
+        action := ApplySpreadsheetTextTransform(context, position, addedText)
+        if IsObject(action)
+            PushUndoAction(action)
+    } catch as err {
+        MsgBox("处理失败：" . err.Message, title, "Icon!")
     }
-
-    if (processed > 0)
-        PushUndoAction(undoAction)
-
-    if (failed > 0)
-        MsgBox("处理失败：" . failed . " 个单元格", title, "Icon!")
 }
 
 RemoveBracketTextFromExcelSelection() {
     context := GetSpreadsheetSelectionContext("表格删除括号内容")
     if !IsObject(context)
         return
-    xl := context["app"]
-
-    try selection := context["selection"]
-    catch {
-        MsgBox("无法读取当前表格选区。请先选中一个或多个单元格。", "表格删除括号内容", "Icon!")
-        return
-    }
-
-    try cells := selection.Cells
-    catch {
-        MsgBox("当前选区不是单元格区域。请选中一个或多个单元格后再通过面板执行。", "表格删除括号内容", "Icon!")
-        return
-    }
-
-    processed := 0
-    unchanged := 0
-    skippedBlank := 0
-    skippedFormula := 0
-    failed := 0
-
-    undoAction := CreateUndoAction("删除括号内容并合并换行", xl, context["kind"])
-    oldScreenUpdating := xl.ScreenUpdating
-    oldEnableEvents := xl.EnableEvents
-
     try {
-        xl.ScreenUpdating := false
-        xl.EnableEvents := false
-
-        for area in selection.Areas {
-            for cell in area.Cells {
-                try {
-                    if (cell.HasFormula) {
-                        skippedFormula += 1
-                        continue
-                    }
-
-                    value := cell.Value
-                    if (value = "") {
-                        skippedBlank += 1
-                        continue
-                    }
-
-                    oldText := value . ""
-                    newText := RemoveBracketTextAndLineBreaks(oldText)
-                    if (newText = oldText) {
-                        unchanged += 1
-                        continue
-                    }
-
-                    AddUndoCell(undoAction, cell)
-                    cell.Value := newText
-                    cell.WrapText := false
-                    processed += 1
-                } catch {
-                    failed += 1
-                }
-            }
-        }
-    } finally {
-        xl.ScreenUpdating := oldScreenUpdating
-        xl.EnableEvents := oldEnableEvents
+        action := ApplySpreadsheetTextTransform(context, "brackets")
+        if IsObject(action)
+            PushUndoAction(action)
+    } catch as err {
+        MsgBox("处理失败：" . err.Message, "表格删除括号内容", "Icon!")
     }
-
-    if (processed > 0)
-        PushUndoAction(undoAction)
-
-    if (failed > 0)
-        MsgBox("处理失败：" . failed . " 个单元格", "表格删除括号内容", "Icon!")
 }
 
 RemoveTextFromExcelSelection(position) {
@@ -1535,62 +1673,13 @@ RemoveTextFromExcelSelection(position) {
         return
     }
 
-    processed := 0
-    unchanged := 0
-    skippedBlank := 0
-    skippedFormula := 0
-    failed := 0
-
-    actionName := isStart ? "删除前端 " : "删除末尾 "
-    undoAction := CreateUndoAction(actionName . deleteCount . " 个字符", xl, context["kind"])
-    oldScreenUpdating := xl.ScreenUpdating
-    oldEnableEvents := xl.EnableEvents
-
     try {
-        xl.ScreenUpdating := false
-        xl.EnableEvents := false
-
-        for area in selection.Areas {
-            for cell in area.Cells {
-                try {
-                    if (cell.HasFormula) {
-                        skippedFormula += 1
-                        continue
-                    }
-
-                    value := cell.Value
-                    if (value = "") {
-                        skippedBlank += 1
-                        continue
-                    }
-
-                    oldText := value . ""
-                    newText := isStart
-                        ? RemoveLeadingText(oldText, deleteCount)
-                        : RemoveTrailingText(oldText, deleteCount)
-                    if (newText = oldText) {
-                        unchanged += 1
-                        continue
-                    }
-
-                    AddUndoCell(undoAction, cell)
-                    cell.Value := newText
-                    processed += 1
-                } catch {
-                    failed += 1
-                }
-            }
-        }
-    } finally {
-        xl.ScreenUpdating := oldScreenUpdating
-        xl.EnableEvents := oldEnableEvents
+        action := ApplySpreadsheetTextTransform(context, position, deleteCount)
+        if IsObject(action)
+            PushUndoAction(action)
+    } catch as err {
+        MsgBox("处理失败：" . err.Message, title, "Icon!")
     }
-
-    if (processed > 0)
-        PushUndoAction(undoAction)
-
-    if (failed > 0)
-        MsgBox("处理失败：" . failed . " 个单元格", title, "Icon!")
 }
 
 SortCableRowsByCrossSection() {
@@ -1910,11 +1999,17 @@ DedupeAndGroupExcelSelectedColumn() {
     blankCount := 0
     duplicateCount := 0
 
+    restoreRange := ws.Range(columnName . "2:" . columnName . lastRow)
+    try {
+        if (restoreRange.MergeCells != false)
+            throw Error("待整理列包含合并单元格，请先拆分后处理。")
+        rawValues := restoreRange.Value
+    } catch as err {
+        MsgBox("无法读取待整理数据，本次未修改：" . err.Message, "表格列去重整理", "Icon!")
+        return
+    }
     Loop lastRow - 1 {
-        row := A_Index + 1
-        try rawValue := ws.Cells(row, columnNumber).Value
-        catch
-            continue
+        rawValue := GetSpreadsheetMatrixValue(rawValues, A_Index, 1, lastRow - 1, 1)
 
         text := CleanCellText(rawValue)
         if (text = "") {
@@ -1957,29 +2052,12 @@ DedupeAndGroupExcelSelectedColumn() {
     if (MsgBox(confirmText, "表格列去重整理", "OKCancel Icon?") != "OK")
         return
 
-    undoAction := CreateUndoAction("去重整理", xl, context["kind"])
-    oldScreenUpdating := xl.ScreenUpdating
-    oldEnableEvents := xl.EnableEvents
-
     try {
-        xl.ScreenUpdating := false
-        xl.EnableEvents := false
-
-        restoreRange := ws.Range(columnName . "2:" . columnName . lastRow)
-        AddUndoRange(undoAction, restoreRange)
-        restoreRange.ClearContents()
-        for index, value in result {
-            ws.Cells(index + 1, columnNumber).Value := value
-        }
+        action := WriteSpreadsheetDedupeResult(context, restoreRange, result)
+        PushUndoAction(action)
     } catch as err {
         MsgBox("整理失败：" . err.Message, "表格列去重整理", "Icon!")
-        return
-    } finally {
-        xl.ScreenUpdating := oldScreenUpdating
-        xl.EnableEvents := oldEnableEvents
     }
-
-    PushUndoAction(undoAction)
 }
 
 UndoExcelCommandPanelAction() {
@@ -2244,6 +2322,10 @@ RestoreUndoAction(app, action) {
 
             range := currentWs.Range(item["address"])
             range.Formula := item["formula"]
+            if item.Has("wraps") {
+                for wrap in item["wraps"]
+                    currentWs.Range(wrap["address"]).WrapText := wrap["value"]
+            }
         }
     } finally {
         for _, pbInfo in wsPageBreakStates {
@@ -3036,7 +3118,7 @@ AddUndoRange(action, range) {
     workbook := range.Worksheet.Parent.FullName
     sheet := range.Worksheet.Name
     address := range.Address(false, false)
-    formula := range.Formula
+    formula := GetSpreadsheetUndoFormula(range)
 
     action["items"].Push(Map(
         "workbook", workbook,
@@ -3044,6 +3126,48 @@ AddUndoRange(action, range) {
         "address", address,
         "formula", formula
     ))
+}
+
+; Formula 写回会把 =开头的常量文字变成公式、数字文字变成数值。
+; 对非公式的字符串明确添加文字前缀，恢复时保留原始类型。
+GetSpreadsheetUndoFormula(range) {
+    formula := range.Formula
+    allFormulas := range.HasFormula
+    if (allFormulas = true)
+        return formula
+    values := range.Value2
+    rows := range.Rows.Count
+    columns := range.Columns.Count
+    if (rows = 1 && columns = 1)
+        return Type(values) = "String" && values != "" ? "'" . values : formula
+    formulaCells := Map()
+    if (allFormulas != false) {
+        app := range.Application
+        actualFormulas := app.Intersect(range, range.SpecialCells(-4123))
+        if IsObject(actualFormulas) {
+            top := range.Row
+            left := range.Column
+            for area in actualFormulas.Areas {
+                firstRow := area.Row - top + 1
+                firstColumn := area.Column - left + 1
+                Loop area.Rows.Count {
+                    row := firstRow + A_Index - 1
+                    Loop area.Columns.Count
+                        formulaCells[row . ":" . (firstColumn + A_Index - 1)] := true
+                }
+            }
+        }
+    }
+    Loop rows {
+        row := A_Index
+        Loop columns {
+            column := A_Index
+            value := values[row, column]
+            if (Type(value) = "String" && value != "" && !formulaCells.Has(row . ":" . column))
+                formula[row, column] := "'" . value
+        }
+    }
+    return formula
 }
 
 AddUndoMergeRange(action, range) {
