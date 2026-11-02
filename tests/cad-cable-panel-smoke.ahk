@@ -122,6 +122,105 @@ for element in ui["elements"]
         hit++
 Check(hit >= 10, "列表和楼层页签可点击（实际 " . hit . "）")
 
+; 平面图：对象拾取、缩放、拖动。ToScreen 把图纸坐标换成窗口逻辑像素，和绘制用同一个视图
+ToScreen(wx, wy) {
+    plan := CablePanelState["plan"]
+    xf := CablePanelPlanXform(plan)
+    return [plan["x"] + plan["w"] / 2 + (wx - xf["cx"]) * xf["k"], plan["y"] + plan["h"] / 2 - (wy - xf["cy"]) * xf["k"]]
+}
+PickAt(wx, wy) {
+    pos := ToScreen(wx, wy)
+    pick := CablePanelPick(CablePanelState["plan"], pos[1], pos[2])
+    return IsObject(pick) ? pick["handle"] : ""
+}
+Lparam(pos) {
+    scale := A_ScreenDPI / 96
+    return ((Round(pos[2] * scale) & 0xFFFF) << 16) | (Round(pos[1] * scale) & 0xFFFF)
+}
+CablePanelState["hilite"] := ""
+CablePanelPickFloor("1F")
+Check(PickAt(14000, 2000) = "29B", "点到柜子")
+Check(PickAt(16000, 5000) = "2A4", "点到竖井")
+Check(PickAt(5000, 1000) = "29E", "点到通道")
+Check(PickAt(5000, 6000) = "28E", "点到房间")
+Check(PickAt(11000, 7000) = "", "空白处没有对象")
+
+plan := CablePanelState["plan"]
+fitK := CablePanelPlanXform(plan)["k"]
+before := ToScreen(14000, 2000)
+loop 6
+    CablePanelZoomAt(plan, before[1], before[2], 1.25)
+after := ToScreen(14000, 2000)
+Check(CablePanelState["view"]["k"] > fitK * 3.7 && Abs(after[1] - before[1]) < 0.01 && Abs(after[2] - before[2]) < 0.01, "缩放时鼠标所指的点不动")
+SaveCanvas(ui, outDir . "\cable-panel-zoom.png", size)
+loop 60
+    CablePanelZoomAt(plan, before[1], before[2], 1.25)
+Check(CablePanelState["view"]["k"] <= fitK * 400.01, "放大有上限")
+CablePanelFit()
+Check(!IsObject(CablePanelState["view"]), "全图回到适应窗口")
+
+; 平面图名称：互相冲突的不画，拉开后显示；靠右的放到点的左边；房间名挡住时让开
+closeMarks := [[100, 100, "柜A"], [100, 110, "柜B"]]
+Check(CablePanelClearLabels(closeMarks, [], 1000, 12).Length = 0, "挨得太近的名称都不画")
+farMarks := [[100, 100, "柜A"], [100, 200, "柜B"]]
+Check(CablePanelClearLabels(farMarks, [], 1000, 12).Length = 2, "拉开后名称都显示")
+Check(CablePanelClearLabels([[995, 100, "柜A"]], [], 1000, 12)[1][1] < 995, "靠右的名称放到点的左边")
+Check(CablePanelClearLabels(farMarks, [[90, 90, 400, 110]], 1000, 12).Length = 1, "和房间名冲突的名称不画")
+columns := CablePanelClearLabels([[100, 100, "继电保护试验电源柜"], [200, 100, "公用测控柜"]], [], 1000, 12)
+Check(columns.Length = 2 && columns[1][3] < 200, "长名称截短到下一列的点之前，两列都显示")
+crossing := CablePanelClearLabels([[100, 100, "继电保护试验电源柜配电柜"], [500, 112, "新能源数据中心专网柜配电柜"]], [], 510, 20)
+Check(crossing.Length = 1 && crossing[1][5] = "继电保护试验电源柜配电柜", "隔得远的长名称相撞时保留一个")
+
+; 中键拖动：按下记录，移动平移，松开结束；拖到很远也不会把图拖丢
+hwnd := ui["gui"].Hwnd
+start := [plan["x"] + plan["w"] / 2, plan["y"] + plan["h"] / 2]
+CablePanelOnMiddleDown(0, Lparam(start), 0x207, hwnd)
+Check(IsObject(CablePanelState["drag"]), "中键按下进入拖动")
+dragTo := [start[1] + 30, start[2] + 12]
+CablePanelOnMouseMove(0, Lparam(dragTo), 0x200, hwnd)
+Check(Abs(ToScreen(10000, 4000)[1] - dragTo[1]) < 40, "拖动后画面跟随鼠标")
+CablePanelOnMouseMove(0, Lparam([start[1] + 5000, start[2]]), 0x200, hwnd)
+view := CablePanelState["view"]
+Check(view["cx"] >= plan["minX"] && view["cx"] <= plan["maxX"], "拖到很远时中心仍在图形范围内")
+CablePanelOnMiddleUp(0, 0, 0x208, hwnd)
+Check(!IsObject(CablePanelState["drag"]), "中键松开结束拖动")
+CablePanelFit()
+
+; 向导新增对象时，缩放好的画面不跳
+pos := ToScreen(14000, 2000)
+CablePanelZoomAt(plan, pos[1], pos[2], 2)
+viewBefore := CablePanelState["view"]["cx"]
+Rewrite(base . "CAB`t1F`t远处新柜`t2B1`t90000`t90000`t`t`n")
+CablePanelPoll()
+Check(CablePanelState["view"]["cx"] = viewBefore, "实时刷新不改变缩放后的画面")
+CablePanelFit()
+Rewrite(base)
+CablePanelPoll()
+
+; 平面图点中对象后列表滚到对应行（不走 CablePanelClick，避免连接 CAD）
+Rewrite(many)
+CablePanelPoll()
+CablePanelState["floor"] := "3F", CablePanelState["scroll"] := 0, CablePanelState["reveal"] := "F35"
+CablePanelRender()
+Check(CablePanelState["scroll"] > 0 && CablePanelState["reveal"] = "", "列表滚到点中的柜子")
+
+; 放大窗口：够宽时平面图在左、列表在右，所有元素仍在窗口内
+ui["gui"].Show("w1100 h800 NoActivate")
+Sleep(100)
+wideSize := CablePanelSize()
+Check(wideSize[1] = 1100 && wideSize[2] = 800, "窗口放大后尺寸同步（实际 " . wideSize[1] . "x" . wideSize[2] . "）")
+Check(CablePanelState["plan"]["w"] > 700 && CablePanelState["plan"]["h"] > 600, "放大后平面图跟着变大")
+inside := true
+for element in ui["elements"]
+    if (element["x"] + element["w"] > wideSize[1] || element["y"] + element["h"] > wideSize[2])
+        inside := false
+Check(inside, "放大后所有元素都在窗口内")
+CablePanelPickFloor("1F")
+SaveCanvas(ui, outDir . "\cable-panel-wide.png", wideSize)
+ui["gui"].Show("w440 h760 NoActivate")
+Sleep(100)
+Check(CablePanelSize()[1] = 440 && CablePanelState["plan"]["h"] = 214, "缩回默认大小后恢复原布局")
+
 ; 关闭后这张图不再弹出；换一张图重新弹出
 CablePanelClose()
 Rewrite(base)
