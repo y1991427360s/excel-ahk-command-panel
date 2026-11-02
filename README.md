@@ -81,6 +81,17 @@
 - 卡片与主面板可同时存在：`ModernPanelCreate` 的第三个参数 `keep` 为真时登记为常驻小窗，打开主面板不会清掉它。
 - 冒烟测试（不连接 CAD）：`AutoHotkey64.exe tests\cad-report-card-smoke.ahk <输出目录>`，会把卡片画布存成 PNG 并输出 PASS/FAIL。
 
+## 电缆定义总览（2ci 电缆向导）
+
+`cad_cable_wizard.lsp` 每标一个房间、柜子、通道或竖井就重写 `%TEMP%\DDFD-Cable\overview.txt`，`src\cad-cable-panel.ahk` 每 0.2 秒检查文件时间，把内容显示成悬浮面板（不抢焦点）。
+
+- 内容：六步状态、楼层页签、楼层平面图、房间及其柜子、不在房间的柜子、通道、竖井配对、全图问题。向导换楼层时面板跟着切，手动切到别的楼层后同层刷新不会抢回去。
+- **只读**：面板平时不连接 CAD。只有点条目时，才在 CAD 空闲时发送 `(ddfd:zoom "句柄")` 定位；CAD 在执行命令或拒绝 COM 时只在托盘提示。
+- 关掉面板后，同一张图不再弹出；从主面板按钮（独立版用托盘“显示总览”）重新打开，换一张图会自动弹出。
+- 已并入主面板，随主面板开机启动，也可在 `Ctrl+Shift+E` 的 DWG 页点“电缆定义总览”打开。`src\cad-cable-panel-main.ahk` 是不装主面板的电脑用的独立入口，也是打包 EXE 的入口；两者不要同时运行，否则同一次刷新会弹出两个窗口。
+- 向导函数不要用同步 SendCommand 发 `(ddfd:routes)`：画完线前调用会一直阻塞；AutoCAD 停在取点提示时还会拒绝 COM 调用。
+- 冒烟测试（不连接 CAD）：`AutoHotkey64.exe tests\cad-cable-panel-smoke.ahk <输出目录>`，窗口放在屏幕外，画布存成 PNG 并输出 PASS/FAIL。
+
 ## 表格工具说明
 
 ### 导出选区信息（给 AI）

@@ -342,6 +342,9 @@ ModernPanelRender(ui, width, height) {
         style := (ModernPanelSame(element, ui["hover"]) && IsObject(element["hover"])) ? element["hover"] : element["style"]
         ModernPanelDrawElement(graphics, element["x"] * scale, element["y"] * scale, element["w"] * scale, element["h"] * scale
             , element["text"], style, scale, isGlass)
+        ; 自绘元素（如电缆总览的平面图）：回调收到 GDI+ 图形对象和缩放比例
+        if element.Has("draw")
+            element["draw"](graphics, scale)
     }
 
     DllCall("gdiplus\GdipDeleteGraphics", "Ptr", graphics)

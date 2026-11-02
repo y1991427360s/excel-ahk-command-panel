@@ -8,6 +8,7 @@ Persistent
 #Include input-method-switch.ahk
 #Include modern-panel-ui.ahk
 #Include cad-report-card.ahk
+#Include cad-cable-panel.ahk
 
 global AutomationPanelGui := ""
 global AutomationContextHwnd := 0
@@ -21,6 +22,7 @@ global CopyQExe := "D:\CopyQ\copyq.exe"
 global AaLspPath := "D:\Syncthing\Oracle-Sync\LISP\ZW-auto_lisp\AA整合版本.lsp"
 global AcadAaLspPath := "D:\Syncthing\Oracle-Sync\LISP\AutoCAD2018_lisp\AA整合版本.lsp"
 LogPanelDiagnostic("脚本初始化启动", "PID=" . ProcessExist() . "; ScriptHwnd=" . A_ScriptHwnd . "; Class=" . WinGetClass(A_ScriptHwnd))
+CablePanelInit()
 
 LogPanelDiagnostic(eventName, details := "") {
     static logPath := ""
@@ -191,9 +193,10 @@ ShowAutomationPanel() {
         , ["保存并重开", SaveAndReopenActiveCadDrawing, true, Chr(0xE777)])
     ModernPanelNote(ui, "作用于打开面板前所在 CAD 的当前图纸；强制关闭不保存、不确认。", 1)
     ModernPanelSpace(ui, 6)
-    ModernPanelSection(ui, "文字联动标记（中望 CAD）")
-    ModernPanelRow(ui, ["查看文字标记 SXC", RunZwcadCommand.Bind("SXC", "查看文字标记"), true, Chr(0xE721)])
-    ModernPanelNote(ui, "执行 SXC：选文字或回车查全图，结果卡片里点条目定位。", 1)
+    ModernPanelSection(ui, "文字联动标记与电缆总览")
+    ModernPanelRow(ui, ["查看文字标记 SXC", RunZwcadCommand.Bind("SXC", "查看文字标记"), true, Chr(0xE721)]
+        , ["电缆定义总览", CablePanelOpen, true, Chr(0xE8A1)])
+    ModernPanelNote(ui, "SXC：选文字或回车查全图，结果卡片里点条目定位。总览随电缆向导实时更新。", 1)
     ModernPanelSpace(ui, 6)
     ModernPanelSection(ui, "重新加载 AA整合版本.lsp")
     ModernPanelRow(ui, ["重载中望 CAD 插件", ReloadZwcadAaLsp, true, Chr(0xE72C)], ["重载 AutoCAD 插件", ReloadAutocadAaLsp, true, Chr(0xE72C)])
