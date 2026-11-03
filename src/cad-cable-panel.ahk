@@ -2,6 +2,7 @@
 ; 电缆定义总览：把 cad_cable_wizard.lsp 写的 %TEMP%\DDFD-Cable\overview.txt 实时显示成悬浮面板（不抢焦点）。
 ; 每 0.2 秒比较文件的修改时间，向导每标一个对象就刷新一次，向导切楼层时面板跟着切。
 ; 面板只读文件，不连接 CAD；只有点条目或平面图上的对象时才在 CAD 空闲时发送 (ddfd:zoom "句柄") 定位。
+; 右键柜子可设长度调整（加减几米），确认后发送 (ddfd:adjust "句柄" 米数 "说明") 写进图纸，网页计算时带上。
 ; 窗口可拖边放大；平面图上滚轮缩放、中键拖动、双击中键或“全图”回到全貌。
 ; 文件格式见 LSP 的“定义总览”一节，中望写 UTF-8，AutoCAD 2018 写系统编码，读取时自动识别。
 ; 依赖 modern-panel-ui.ahk；主面板和独立版都 #Include 本文件，并各自调用 CablePanelInit()。
@@ -9,7 +10,7 @@
 global CablePanelPath := EnvGet("TEMP") . "\DDFD-Cable\overview.txt"
 global CablePanelState := Map("ui", "", "data", "", "floor", "", "curFloor", "", "scroll", 0, "hilite", ""
     , "stamp", 0, "closedDwg", "", "maxScroll", 0, "pos", "", "w", 440, "h", 760
-    , "plan", "", "view", "", "drag", "", "pick", "", "down", "", "reveal", "")
+    , "plan", "", "view", "", "drag", "", "pick", "", "down", "", "reveal", "", "cabRows", [], "adjustUi", "")
 
 ; 启动时已有的旧文件不弹出，等向导写入新内容
 CablePanelInit() {
@@ -19,6 +20,7 @@ CablePanelInit() {
     OnMessage(0x0200, CablePanelOnMouseMove)    ; WM_MOUSEMOVE
     OnMessage(0x0201, CablePanelOnLeftDown)     ; WM_LBUTTONDOWN
     OnMessage(0x0202, CablePanelOnLeftUp)       ; WM_LBUTTONUP
+    OnMessage(0x0205, CablePanelOnRightUp)      ; WM_RBUTTONUP
     OnMessage(0x0207, CablePanelOnMiddleDown)   ; WM_MBUTTONDOWN
     OnMessage(0x0208, CablePanelOnMiddleUp)     ; WM_MBUTTONUP
     OnMessage(0x0209, CablePanelOnMiddleDouble) ; WM_MBUTTONDBLCLK
@@ -89,7 +91,8 @@ CablePanelParse(text) {
                     data["rooms"].Push(Map("floor", p[2], "name", p[3], "handle", p[4], "count", p[5], "pts", CablePanelParsePoints(p[6])))
             case "CAB":
                 if (p.Length >= 8 && IsNumber(p[5]) && IsNumber(p[6]))
-                    data["cabs"].Push(Map("floor", p[2], "name", p[3], "handle", p[4], "x", Number(p[5]), "y", Number(p[6]), "room", p[7], "roomName", p[8]))
+                    data["cabs"].Push(Map("floor", p[2], "name", p[3], "handle", p[4], "x", Number(p[5]), "y", Number(p[6]), "room", p[7], "roomName", p[8]
+                        , "adjust", p.Length >= 9 && IsNumber(p[9]) ? Number(p[9]) : 0, "adjustNote", p.Length >= 10 ? p[10] : ""))
             case "SHAFT":
                 if (p.Length >= 7 && IsNumber(p[6]) && IsNumber(p[7]))
                     data["shafts"].Push(Map("floor", p[2], "base", p[3], "name", p[4], "handle", p[5], "x", Number(p[6]), "y", Number(p[7])))
@@ -381,9 +384,13 @@ CablePanelBuild(ui, data, width, height) {
     st["maxScroll"] := Max(0, total - (bottom - top))
     st["scroll"] := Min(Max(0, st["scroll"]), st["maxScroll"])
     cursor := top - st["scroll"]
+    st["cabRows"] := []
     for row in rows {
-        if (cursor >= top && cursor + row["h"] <= bottom)
+        if (cursor >= top && cursor + row["h"] <= bottom) {
             CablePanelAddRow(ui, row, listX, cursor, listW - 8, colors)
+            if row.Has("cab")
+                st["cabRows"].Push([listX, cursor, listW - 8, 24, row["cab"]])
+        }
         cursor += row["h"]
     }
     if st["maxScroll"] {
@@ -419,6 +426,11 @@ CablePanelRows(data, rooms, cabs, routes, shafts) {
     rows := []
     head(text) => rows.Push(Map("type", "head", "h", 26, "text", text))
     item(text, handle, icon, indent := 0) => rows.Push(Map("type", "item", "h", 25, "text", text, "handle", handle, "icon", icon, "indent", indent))
+    ; 柜子行带上长度调整，右键可改
+    cabItem(cab) {
+        item(cab["name"] . (cab["adjust"] ? "　" . CablePanelAdjustText(cab["adjust"]) : ""), cab["handle"], "", 18)
+        rows[rows.Length]["cab"] := cab
+    }
 
     if rooms.Length
         head("房间 " . rooms.Length)
@@ -429,7 +441,7 @@ CablePanelRows(data, rooms, cabs, routes, shafts) {
                 inside.Push(cab)
         item(room["name"] . "（" . inside.Length . " 台）", room["handle"], Chr(0xE80F))
         for cab in CablePanelSortByName(inside)
-            item(cab["name"], cab["handle"], "", 18)
+            cabItem(cab)
     }
     outside := []
     for cab in cabs
@@ -438,7 +450,7 @@ CablePanelRows(data, rooms, cabs, routes, shafts) {
     if outside.Length {
         head((rooms.Length ? "不在任何房间 " : "柜子 ") . outside.Length)
         for cab in CablePanelSortByName(outside)
-            item(cab["name"], cab["handle"], "", 18)
+            cabItem(cab)
     }
     if routes.Length {
         head("通道 " . routes.Length . " 条")
@@ -667,7 +679,8 @@ CablePanelPick(plan, lx, ly) {
         dist := Sqrt((cab["x"] - wx) ** 2 + (cab["y"] - wy) ** 2)
         if (dist <= bestDist) {
             bestDist := dist
-            best := Map("handle", cab["handle"], "text", "柜子　" . cab["name"] . (cab["roomName"] != "" ? "（" . cab["roomName"] . "）" : ""))
+            best := Map("handle", cab["handle"], "cab", cab, "text", "柜子　" . cab["name"] . (cab["roomName"] != "" ? "（" . cab["roomName"] . "）" : "")
+                . (cab["adjust"] ? "　长度调整 " . CablePanelAdjustText(cab["adjust"]) : "") . "　右键调整长度")
         }
     }
     for shaft in plan["shafts"] {
@@ -765,6 +778,26 @@ CablePanelPlanClick(handle) {
     global CablePanelState
     CablePanelState["reveal"] := handle
     CablePanelClick(handle)
+}
+
+; 右键列表里的柜子行或平面图上的柜子：打开长度调整
+CablePanelOnRightUp(wParam, lParam, msg, hwnd) {
+    global CablePanelState
+    st := CablePanelState
+    if !CablePanelIsPanel(hwnd)
+        return
+    mouse := CablePanelMouse(lParam)
+    cab := ""
+    pick := CablePanelPick(st["plan"], mouse[1], mouse[2])
+    if (IsObject(pick) && pick.Has("cab"))
+        cab := pick["cab"]
+    for r in st["cabRows"]
+        if (mouse[1] >= r[1] && mouse[1] < r[1] + r[3] && mouse[2] >= r[2] && mouse[2] < r[2] + r[4])
+            cab := r[5]
+    if IsObject(cab) {
+        SetTimer(CablePanelAdjustOpen.Bind(cab), -1)
+        return 0
+    }
 }
 
 CablePanelOnMiddleDown(wParam, lParam, msg, hwnd) {
@@ -955,7 +988,7 @@ CablePanelDrawPlan(plan, graphics, scale) {
     for cab in cabs {
         px := toX(cab["x"]), py := toY(cab["y"])
         if (px >= boxX && px < boxRight && py >= boxY && py < boxBottom)
-            marks.Push([px, py, cab["name"]])
+            marks.Push([px, py, cab["name"] . (cab["adjust"] ? " " . CablePanelAdjustText(cab["adjust"]) : "")])
         DllCall("gdiplus\GdipFillEllipse", "Ptr", graphics, "Ptr", dot, "Float", px - r, "Float", py - r, "Float", r * 2, "Float", r * 2)
         if lit(cab["handle"])
             DllCall("gdiplus\GdipDrawEllipse", "Ptr", graphics, "Ptr", hiPen, "Float", px - r * 2, "Float", py - r * 2, "Float", r * 4, "Float", r * 4)
@@ -984,7 +1017,7 @@ CablePanelDrawPlan(plan, graphics, scale) {
     ; 底部提示条：平时是操作说明，鼠标指着对象时显示它的名称
     tip := ModernPanelStyle("E6F7F8FA", colors["secondary"], false, "left")
     tip["size"] := 8.5, tip["padding"] := 8, tip["radius"] := 6
-    text := IsObject(CablePanelState["pick"]) ? CablePanelState["pick"]["text"] : "滚轮缩放　中键拖动　点对象跳转到 CAD"
+    text := IsObject(CablePanelState["pick"]) ? CablePanelState["pick"]["text"] : "滚轮缩放　中键拖动　点对象跳转到 CAD　右键柜子调整长度"
     ModernPanelDrawElement(graphics, boxX + 4 * scale, boxY + boxH - 26 * scale, boxW - 8 * scale, 22 * scale, text, tip, scale, false)
     DllCall("gdiplus\GdipResetClip", "Ptr", graphics)
 }
@@ -1002,8 +1035,13 @@ CablePanelFindDoc(cadApp, dwg) {
     return ""
 }
 
-; 只在用户点条目时连接 CAD。CAD 正在执行命令时不发送，避免把文字打进命令提示；AutoCAD 取点时会直接拒绝 COM 调用
 CablePanelLocate(handle) {
+    CablePanelSend('(ddfd:zoom "' . handle . '")', "点条目定位")
+}
+
+; 只在用户操作时连接 CAD。CAD 正在执行命令时不发送，避免把文字打进命令提示；AutoCAD 取点时会直接拒绝 COM 调用。
+; what 是提示里的动作名，发送成功返回 true
+CablePanelSend(expr, what, activate := true) {
     global CablePanelState
     title := "电缆定义总览"
     dwg := IsObject(CablePanelState["data"]) ? CablePanelState["data"]["dwg"] : ""
@@ -1018,18 +1056,102 @@ CablePanelLocate(handle) {
             if !IsObject(doc)
                 continue
             if (doc.GetVariable("CMDACTIVE") != 0) {
-                TrayTip("CAD 正在执行命令，结束当前步骤后再点条目定位。", title, "Iconi Mute")
-                return
+                TrayTip("CAD 正在执行命令，结束当前步骤后再" . what . "。", title, "Iconi Mute")
+                return false
             }
             if (cadApp.ActiveDocument.Name != doc.Name)
                 doc.Activate()
-            doc.SendCommand('(ddfd:zoom "' . handle . '")`n')
-            try WinActivate("ahk_exe " . pair[2])
-            return
+            doc.SendCommand(expr . "`n")
+            if activate
+                try WinActivate("ahk_exe " . pair[2])
+            return true
         } catch {
-            TrayTip("CAD 正忙，结束当前步骤后再点条目定位。", title, "Iconi Mute")
-            return
+            TrayTip("CAD 正忙，结束当前步骤后再" . what . "。", title, "Iconi Mute")
+            return false
         }
     }
     TrayTip(found ? "这张图没有在 CAD 里打开：`n" . dwg : "没有找到运行中的 CAD。", title, "Iconi Mute")
+    return false
+}
+
+; ---------- 柜子长度调整 ----------
+
+; 4 → "+4 m"，-1.5 → "-1.5 m"
+CablePanelAdjustText(v) {
+    s := RegExReplace(Format("{:.3f}", v), "\.?0+$")
+    return (v > 0 ? "+" : "") . s . " m"
+}
+
+; 小窗：输入米数（负数为减）和说明，保存后写进 CAD 图纸，总览随之刷新
+CablePanelAdjustOpen(cab) {
+    global CablePanelState
+    st := CablePanelState
+    CablePanelAdjustClose()
+    colors := ModernPanelColors()
+    ; WS_CLIPCHILDREN：画布重绘时不盖掉输入框
+    ui := ModernPanelCreate("柜子长度调整", "+AlwaysOnTop -MinimizeBox -MaximizeBox +0x2000000", true)
+    panel := ui["gui"]
+    panel.SetFont("s10", "Microsoft YaHei UI")
+    st["adjustUi"] := ui
+    ui["cab"] := cab
+    w := 420, pad := 18, inner := w - pad * 2
+    ModernPanelLabelAt(ui, pad, 14, inner, 24, cab["name"], ModernPanelTextStyle(colors["text"], 11, true))
+    ModernPanelLabelAt(ui, pad, 40, inner, 36, "在现有计算规则之外，以这台柜子为起点或终点的电缆都加上这个长度，负数为减。"
+        , ModernPanelTextStyle(colors["secondary"], 9, false, "left", true))
+    field(y, title, value) {
+        ModernPanelLabelAt(ui, pad + 2, y, inner, 20, title, ModernPanelTextStyle(colors["secondary"], 9, true))
+        ModernPanelLabelAt(ui, pad, y + 24, inner, 34, "", ModernPanelDecorate(ModernPanelStyle(colors["tile"], colors["text"]), colors["tileBorder"]))
+        return panel.AddEdit("x" . (pad + 10) . " y" . (y + 31) . " w" . (inner - 20) . " h22 -E0x200 -Wrap", value)
+    }
+    ui["value"] := field(84, "长度调整（米）", cab["adjust"] ? RegExReplace(Format("{:.3f}", cab["adjust"]), "\.?0+$") : "")
+    ui["note"] := field(150, "说明（可空）", cab["adjustNote"])
+    ui["status"] := ModernPanelLabelAt(ui, pad, 218, inner, 18, "", ModernPanelTextStyle("D32F2F", 9))
+    tileW := (inner - 16) // 3
+    ModernPanelTile(ui, pad, 242, tileW, 34, "保存", CablePanelAdjustSave.Bind(false), true, Chr(0xE74E))
+    ModernPanelTile(ui, pad + tileW + 8, 242, tileW, 34, "取消调整", CablePanelAdjustSave.Bind(true), cab["adjust"] != 0, Chr(0xE711))
+    ModernPanelTile(ui, pad + (tileW + 8) * 2, 242, tileW, 34, "关闭", (*) => CablePanelAdjustClose(), true)
+    ; 看不见的默认按钮：在输入框里按回车就保存
+    panel.AddButton("Default x0 y0 w0 h0").OnEvent("Click", CablePanelAdjustSave.Bind(false))
+    panel.OnEvent("Close", (*) => CablePanelAdjustClose())
+    panel.OnEvent("Escape", (*) => CablePanelAdjustClose())
+    panel.Show("w" . w . " h292 Center")
+    ui["value"].Focus()
+    SendMessage(0xB1, 0, -1, ui["value"]) ; EM_SETSEL 全选，直接输入就替换
+}
+
+CablePanelAdjustClose() {
+    global CablePanelState
+    ui := CablePanelState["adjustUi"]
+    CablePanelState["adjustUi"] := ""
+    if !IsObject(ui)
+        return
+    try {
+        ModernPanelReleaseCanvas(ui)
+        ModernPanelRegistry().Delete(ui["gui"].Hwnd)
+        ui["gui"].Destroy()
+    }
+}
+
+; clear 为 true 时取消调整（米数写 0）
+CablePanelAdjustSave(clear, *) {
+    global CablePanelState
+    ui := CablePanelState["adjustUi"]
+    if !IsObject(ui)
+        return
+    text := Trim(StrReplace(ui["value"].Value, "＋", "+"))
+    if clear || text = ""
+        value := 0
+    else if IsNumber(text)
+        value := Number(text)
+    else {
+        ui["status"]["text"] := "米数要填数字，例如 4 或 -2.5"
+        ModernPanelInvalidate(ui)
+        return
+    }
+    note := value = 0 ? "" : Trim(RegExReplace(ui["note"].Value, "[\r\n\t]+", " "))
+    note := StrReplace(StrReplace(note, "\", "\\"), '"', '\"')
+    cab := ui["cab"]
+    expr := '(ddfd:adjust "' . cab["handle"] . '" ' . Format("{:.3f}", value) . ' "' . note . '")'
+    if CablePanelSend(expr, "调整长度", false)
+        CablePanelAdjustClose()
 }
