@@ -1150,6 +1150,13 @@ CablePanelAdjustSave(clear, *) {
     }
     note := value = 0 ? "" : Trim(RegExReplace(ui["note"].Value, "[\r\n\t]+", " "))
     note := StrReplace(StrReplace(note, "\", "\\"), '"', '\"')
+    ; 2026-11-03 之前的插件没有 ddfd:adjust，发过去只会报“undefined function”
+    version := IsObject(CablePanelState["data"]) ? CablePanelState["data"]["version"] : ""
+    if (StrCompare(version, "2026-11-03") < 0) {
+        ui["status"]["text"] := "CAD 里是旧版插件（" . version . "），请先 APPLOAD 重新加载 cad_cable_wizard.lsp"
+        ModernPanelInvalidate(ui)
+        return
+    }
     cab := ui["cab"]
     expr := '(ddfd:adjust "' . cab["handle"] . '" ' . Format("{:.3f}", value) . ' "' . note . '")'
     if CablePanelSend(expr, "调整长度", false)
