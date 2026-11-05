@@ -23,6 +23,8 @@ def build(output):
     original = (PROJECT / 'src/excel-command-panel.ahk').read_text(encoding='utf-8-sig')
     functions = {}
     for source in (PROJECT / 'src').glob('*.ahk'):
+        if source.name.endswith('-main.ahk'):  # 独立运行入口，与主面板有同名函数
+            continue
         for match in re.finditer(r'^(\w+)\([^\n]*\) \{\n.*?^\}', source.read_text(encoding='utf-8-sig'), re.M | re.S):
             if match[1] in functions:
                 raise ValueError('Duplicate function: ' + match[1])
@@ -39,8 +41,10 @@ def build(output):
         used |= found
         pending = '\n'.join(functions[name] for name in sorted(found))
     script = body + '\n\n' + '\n\n'.join(code for name, code in functions.items() if name in used) + '\n'
-    for forbidden in ('ZWCAD', 'CopyQ', 'Syncthing', 'ys199', 'OpenSelectedDwg', 'GetSelectedFilePaths'):
-        if forbidden in script:
+    # 分享版包含通用的文件与 CAD 图纸功能，但不能带上本机路径、LISP 插件、Python 或 AI 依赖。
+    for forbidden in ('CopyQ', 'Syncthing', 'Oracle-Sync', 'ys199', 'AA整合版本', 'D:\\', 'python', 'pypdf',
+                      'OpenSelectedDwg', 'RunZwcadCommand', 'ReloadCadAaLsp', 'CablePanel', 'CadAi', 'GetProjectAtlas'):
+        if forbidden.lower() in script.lower():
             raise ValueError('Unexpected personal/file-tool dependency: ' + forbidden)
     (payload / 'spreadsheet-panel.ahk').write_text(script, encoding='utf-8-sig')
     runtime = Path(r'C:\Program Files\AutoHotkey')

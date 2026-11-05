@@ -1,24 +1,30 @@
 #Requires AutoHotkey v2.0
 
-OffsetSpreadsheetSelectionNumbers() {
+OffsetSpreadsheetSelectionNumbers(presetText := "") {
     title := "数字批量加减"
     context := GetSpreadsheetSelectionContext(title)
     if !IsObject(context)
         return
 
-    input := InputBox("输入要增加或减少的数：`n正数表示增加，负数表示减少。`n例如输入 2：8 → 10；输入 -2：8 → 6。`n合并区域只计算一次；空白、文字、公式和日期跳过。", title, "w430 h210", "1")
-    if (input.Result != "OK")
-        return
-    text := Trim(input.Value)
+    if (presetText != "") {
+        text := presetText
+    } else {
+        input := InputBox("输入要增加或减少的数：`n正数表示增加，负数表示减少。`n例如输入 2：8 → 10；输入 -2：8 → 6。`n合并区域只计算一次；空白、文字、公式和日期跳过。", title, "w430 h210", "1")
+        if (input.Result != "OK")
+            return
+        text := Trim(input.Value)
+    }
     if !RegExMatch(text, "^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$") {
         MsgBox("请输入有效的正数或负数，例如 2、-2、0.5。", title, "Icon!")
         return
     }
     try {
         action := ApplySpreadsheetNumericOffset(context, text + 0)
-        if IsObject(action)
+        if IsObject(action) {
             PushUndoAction(action)
-        else if (text + 0 != 0)
+            SetSpreadsheetRepeatPending(OffsetSpreadsheetSelectionNumbers.Bind(text)
+                , "数字" . (text + 0 < 0 ? "减 " . LTrim(text, "-") : "加 " . LTrim(text, "+")))
+        } else if (text + 0 != 0)
             MsgBox("选区中没有可处理的数字。空白、文字、公式和日期不会修改。", title, "Icon!")
     } catch as err {
         MsgBox("处理失败：" . err.Message, title, "Icon!")

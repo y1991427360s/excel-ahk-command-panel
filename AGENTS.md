@@ -36,11 +36,22 @@
 - 文件名文字替换按普通字符串匹配，不区分大小写，只替换文件主名、不触碰扩展名；替换内容允许为空以删除匹配文字。
 - DWG 打开功能只读取打开面板前的资源管理器或桌面选区，只把选中的 `.dwg` 路径传给用户选择的 CAD 软件，不修改或保存图纸。
 - “强制关闭 / 保存并关闭 / 保存并重开”三个按钮必须单独成组，且不得与“重载插件”按钮相邻（中间隔其他分组），防止误点关闭图纸；它们只作用于运行中 CAD 的当前活动图纸：优先打开面板前所在的 CAD 窗口，中望 CAD 与 AutoCAD 同时运行且不在 CAD 窗口时不能猜测目标；`CMDACTIVE ≠ 0` 时拒绝；强制关闭按用户要求不弹确认（2026-10-28）；保存失败不得关闭图纸，未命名或只读图纸不得保存。保存必须通过 `SendCommand` 让 CAD 执行原生 `_.QSAVE`（随后 `_.CLOSE`），禁止从面板进程调用 COM `Document.Save()`（中望 CAD 2026 保存大图时会崩溃，2026-10-28 实测）；强制关闭用 COM `Close(False)` 已实测正常。
+- “批量转可信 DWG”只把选区里的 `.dwg` 和文件夹写进临时清单，交给 `AutoCAD2018_lisp\tools\trusted_dwg_batch.py --from-file` 在可见命令行窗口运行；脚本用 `accoreconsole` 导出副本到 `可信DWG\`，不改原文件、不连接运行中的 CAD。转换逻辑只在该脚本维护，面板不复制一份。
 - Windows 11 的 `Shell.Application.SelectedItems` 可能返回旧标签页或旧选中项；DWG 当前选区必须通过资源管理器原生 `Ctrl+C` 读取，并恢复原剪贴板、避免写入 CopyQ 历史。
 - 合并 PDF 时按资源管理器原生 `Ctrl+C` 取得的选择顺序处理，输出到首个 PDF 所在目录；通过临时 Python 脚本调用 `pypdf`，不修改源文件，覆盖目标前必须明确确认。
 - Word 转 PDF 支持 `.doc`、`.docx`、`.docm`，通过 Microsoft Word COM 以只读方式导出到源文件同目录；覆盖同名 PDF 前必须明确确认，禁止保存或修改源文档。
 - Excel 转 PDF 支持 `.xls`、`.xlsx`、`.xlsm`、`.xlsb`，通过 Microsoft Excel COM 将整个工作簿（含隐藏工作表）导出为一个同目录同名 PDF；工作簿只读打开、不保存，临时显示的隐藏工作表必须恢复原状态，覆盖目标前必须明确确认。
+- 读取 `CF_HDROP` 时必须在约 1 秒内每 50ms 重试：资源管理器分多次写入剪贴板格式，`ClipWait` 返回时可能还没有 `CF_HDROP`（错误码 1418），剪贴板也可能仍被资源管理器或 CopyQ 占用（`OpenClipboard` 错误码 5）；只读一次会让首次打开面板时文件类按钮变灰（2026-11-04 实测）。
 - 面板打开时只读取一次当前窗口 Ctrl+C 产生的原生 `CF_HDROP` 文件列表并保存选区快照；面板功能统一使用该快照，不在按钮执行时重读剪贴板或回退到可能过期的 Shell `SelectedItems`。Word 转换按路径去重，多文件时先展示清单确认。
+
+## AI 改 CAD 文字边界
+
+- `src/cad-ai-text.ahk` + `tools/cad_ai_text.py`：AI 只返回 JSON 替换规则，文字一律由脚本展开，禁止改成让 AI 重打全部文字。校验不过不得输出结果。
+- 调用 `claude -p` 必须用 `--setting-sources local --tools "" --no-session-persistence`：不触发 Stop 钩子通知、不读全局记忆；不能用 `--bare`，它不读登录凭据，会报 Not logged in。
+- AI 设置的接口格式固定两个选项：Anthropic 兼容、OpenAI 兼容，二选一，用标准库 `urllib` 请求，不引入 SDK；Claude Code 登录是单独的勾选项。API Key 只能以 DPAPI 密文写入 `%LOCALAPPDATA%` 下的配置，错误信息和报告里不得出现明文。
+- 发给 AI 前由脚本把“x,y 文字”参照表按行整理、模板去重，不要让 AI 自己还原坐标：2026-10-31 实测带思考的模型会因此把 8192 token 全耗在思考上。参照表取了值却没被规则用到的变量必须判校验失败。
+- 图片识别只负责把表格转成制表符文字并填入参照表，必须由用户核对后才进入规则生成，不得直接串到写回。
+- 回归：`python tests/cad-ai-text-smoke.py`、`python tests/cad-ai-provider-smoke.py`（离线，后者用本地模拟服务）；`tests/cad-ai-settings-smoke.ahk` 用临时配置测保存与解密；`tests/cad-ai-text-window-smoke.ahk` 真实调用 AI 并改写剪贴板。均不连接 CAD。
 
 ## AutoHotkey v2 语法红线与验证部署
 

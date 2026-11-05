@@ -65,6 +65,27 @@ try {
         rejected := true
     TextAssert(rejected && sheet.Range("A1").Value2 = "甲（备注）", "超过10000格写前拒绝")
 
+    ; 文本前缀符 ' 只在需要时添加：普通文字不带 '，会被误解析的结果仍以文字保存。
+    TextAssert(!NeedsSpreadsheetTextPrefix("ZAN-KVVP2-22-2×4") && NeedsSpreadsheetTextPrefix("001") && NeedsSpreadsheetTextPrefix("1-2"), "前缀符判断")
+    prefixRange := sheet.Range("S1:S6")
+    prefixRange.Value2 := ComObjArrayFromList(["KVVP2-22-2×4", "'01", "'-2", "Jan", "'１２", "月"])
+    context["selection"] := prefixRange
+    action := ApplySpreadsheetTextTransform(context, "prefix", "ZAN-")
+    TextAssert(prefixRange.Cells(1, 1).Value2 == "ZAN-KVVP2-22-2×4" && prefixRange.Cells(1, 1).PrefixCharacter = "", "普通文字不加前缀符")
+    RestoreUndoAction(app, action)
+    TextAssert(prefixRange.Cells(1, 1).Value2 == "KVVP2-22-2×4" && prefixRange.Cells(1, 1).PrefixCharacter = "", "撤销普通文字不加前缀符")
+    action := ApplySpreadsheetTextTransform(context, "prefix", "0")
+    TextAssert(Type(prefixRange.Cells(2, 1).Value2) = "String" && prefixRange.Cells(2, 1).Value2 == "001", "数字样结果保持文字")
+    RestoreUndoAction(app, action)
+    action := ApplySpreadsheetTextTransform(context, "prefix", "1")
+    TextAssert(prefixRange.Cells(3, 1).Value2 == "1-2" && prefixRange.Cells(4, 1).Value2 == "1Jan" && Type(prefixRange.Cells(5, 1).Value2) = "String", "日期样结果保持文字")
+    RestoreUndoAction(app, action)
+    action := ApplySpreadsheetTextTransform(context, "suffix", "-5")
+    TextAssert(Type(prefixRange.Cells(4, 1).Value2) = "String" && prefixRange.Cells(4, 1).Value2 == "Jan-5", "英文月份日期保持文字")
+    TextAssert(Type(prefixRange.Cells(5, 1).Value2) = "String" && prefixRange.Cells(5, 1).Value2 == "１２-5", "回读校验兜底")
+    RestoreUndoAction(app, action)
+    TextAssert(prefixRange.Cells(2, 1).Value2 == "01" && prefixRange.Cells(3, 1).Value2 == "-2", "撤销保留数字样文字")
+
     literalRange := sheet.Range("H1:H3")
     literalRange.Cells(1, 1).Value2 := "'=1+1"
     literalRange.Cells(2, 1).Value2 := "'00123"
@@ -109,7 +130,66 @@ try {
     RestoreUndoAction(app, ExcelCommandUndoStack.Pop())
     TextAssert(target.Cells(1, 1).Value2 = "原始常量", "解除保护后可恢复保留快照")
     TextAssert(app.EnableEvents = beforeEvents && app.Calculation = beforeCalc && app.ScreenUpdating = beforeUpdating, "成功失败均恢复应用状态")
-    FileAppend("PASS " . provider . ": batch text, formulas, blanks, selection bounds, literal text, merged cells, undo, dedupe and injected rollback failures`n", "*", "UTF-8")
+
+    ; 标出重复项：忽略首尾空格，数字与数字文字视为相同，撤销还原原底色。
+    dup := sheet.Range("L1:L6")
+    dup.Cells(1, 1).Value2 := "甲"
+    dup.Cells(2, 1).Value2 := "乙"
+    dup.Cells(3, 1).Value2 := " 甲 "
+    dup.Cells(4, 1).Value2 := 10
+    dup.Cells(5, 1).Value2 := "10"
+    dup.Cells(3, 1).Interior.Color := 0x0000FF
+    context["selection"] := dup
+    result := ApplySpreadsheetDuplicateHighlight(context)
+    TextAssert(result["groups"] = 2 && result["cells"] = 4, "重复项分组与格数")
+    TextAssert(dup.Cells(1, 1).Interior.Color = 0x00FFFF && dup.Cells(5, 1).Interior.Color = 0x00FFFF, "重复项标黄")
+    TextAssert(dup.Cells(2, 1).Interior.ColorIndex = -4142 && dup.Cells(6, 1).Interior.ColorIndex = -4142, "唯一值和空白不标色")
+    RestoreUndoAction(app, result["action"])
+    TextAssert(dup.Cells(1, 1).Interior.ColorIndex = -4142 && dup.Cells(3, 1).Interior.Color = 0x0000FF, "撤销还原无填充和原底色")
+    context["selection"] := sheet.Range("L2")
+    result := ApplySpreadsheetDuplicateHighlight(context)
+    TextAssert(result["groups"] = 2 && result["scope"] = "L 列", "单格时比较整列")
+    RestoreUndoAction(app, result["action"])
+    sheet.Range("N1:N2").Merge()
+    sheet.Range("N1").Value2 := "合"
+    sheet.Range("N3").Value2 := "合"
+    sheet.Range("N4").Value2 := "独"
+    context["selection"] := sheet.Range("N1:N4")
+    result := ApplySpreadsheetDuplicateHighlight(context)
+    TextAssert(sheet.Range("N2").Interior.Color = 0x00FFFF && sheet.Range("N3").Interior.Color = 0x00FFFF, "合并区域整体标黄")
+    RestoreUndoAction(app, result["action"])
+    TextAssert(sheet.Range("N2").Interior.ColorIndex = -4142, "合并区域撤销")
+    context["selection"] := sheet.Range("N3:N4")
+    TextAssert(ApplySpreadsheetDuplicateHighlight(context)["groups"] = 0, "无重复时不修改")
+
+    ; 比较两列差异：按集合比较，忽略顺序与首尾空格，两侧各自标出对方没有的值。
+    sheet.Range("P1:P3").Value2 := ComObjArrayFromList(["甲", "乙", 10])
+    sheet.Range("Q1:Q4").Value2 := ComObjArrayFromList(["10", " 甲", "丙", "丁"])
+    sheet.Range("Q3").Interior.Color := 0x0000FF
+    context["selection"] := sheet.Range("P1")
+    result := ApplySpreadsheetColumnCompare(context)
+    TextAssert(result["names"][2] = "Q 列", "只选一列时配右侧相邻列")
+    TextAssert(result["onlyLeft"].Length = 1 && result["onlyLeft"][1]["address"] = "P2", "左列独有项")
+    TextAssert(result["onlyRight"].Length = 2 && result["onlyRight"][2]["key"] = "丁", "右列独有项")
+    TextAssert(sheet.Range("P2").Interior.Color = 0xCEC7FF && sheet.Range("Q3").Interior.Color = 0xCEC7FF, "差异标浅红")
+    TextAssert(sheet.Range("P1").Interior.ColorIndex = -4142 && sheet.Range("Q2").Interior.ColorIndex = -4142, "相同项不标色")
+    RestoreUndoAction(app, result["action"])
+    TextAssert(sheet.Range("P2").Interior.ColorIndex = -4142 && sheet.Range("Q3").Interior.Color = 0x0000FF, "差异撤销还原底色")
+    context["selection"] := sheet.Range("Q1:Q4,P1:P3")
+    result := ApplySpreadsheetColumnCompare(context)
+    TextAssert(result["names"][1] = "P 列" && result["onlyLeft"].Length = 1, "Ctrl 选两列按左右顺序比较")
+    RestoreUndoAction(app, result["action"])
+    context["selection"] := sheet.Range("P1:Q2")
+    result := ApplySpreadsheetColumnCompare(context)
+    TextAssert(result["onlyLeft"].Length = 1 && result["onlyLeft"][1]["key"] = "乙" && result["onlyRight"][1]["key"] = "10", "多行选区只比较选中行")
+    RestoreUndoAction(app, result["action"])
+    context["selection"] := sheet.Range("P1:R1")
+    rejected := false
+    try ApplySpreadsheetColumnCompare(context)
+    catch
+        rejected := true
+    TextAssert(rejected, "超过两列拒绝")
+    FileAppend("PASS " . provider . ": batch text, formulas, blanks, selection bounds, literal text, merged cells, undo, dedupe, duplicate highlight, column compare and injected rollback failures`n", "*", "UTF-8")
 } catch as err {
     FileAppend("FAIL: " . err.Message . " (line " . err.Line . ")`n" . err.Stack . "`n", "*", "UTF-8")
     exitCode := 1
@@ -122,6 +202,13 @@ try {
         try app.Quit()
 }
 ExitApp(exitCode)
+
+ComObjArrayFromList(list) {
+    values := ComObjArray(12, list.Length, 1)
+    for index, value in list
+        values[index - 1, 0] := value
+    return values
+}
 
 TextAssert(condition, message) {
     if !condition

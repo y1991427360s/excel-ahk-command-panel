@@ -4,23 +4,28 @@ Persistent
 #Include spreadsheet-export.ahk
 #Include spreadsheet-numeric-offset.ahk
 #Include spreadsheet-text-transform.ahk
+#Include spreadsheet-duplicate-highlight.ahk
 #Include copyq-guard.ahk
 #Include input-method-switch.ahk
 #Include modern-panel-ui.ahk
 #Include cad-report-card.ahk
 #Include cad-cable-panel.ahk
+#Include cad-ai-text.ahk
 
 global AutomationPanelGui := ""
 global AutomationContextHwnd := 0
 global AutomationSelectedFilePaths := []
 global AutomationSpreadsheetSelectionContext := ""
 global ExcelCommandUndoStack := []
+global SpreadsheetRepeatAction := ""
+global SpreadsheetRepeatPending := ""
 global AutomationPanelLastPage := "table"
 global AutomationPanelUi := ""
 global SelectedDwgPath := ""
 global CopyQExe := "D:\CopyQ\copyq.exe"
 global AaLspPath := "D:\Syncthing\Oracle-Sync\LISP\ZW-auto_lisp\AA整合版本.lsp"
 global AcadAaLspPath := "D:\Syncthing\Oracle-Sync\LISP\AutoCAD2018_lisp\AA整合版本.lsp"
+global TrustedDwgScript := "D:\Syncthing\Oracle-Sync\LISP\AutoCAD2018_lisp\tools\trusted_dwg_batch.py"
 LogPanelDiagnostic("脚本初始化启动", "PID=" . ProcessExist() . "; ScriptHwnd=" . A_ScriptHwnd . "; Class=" . WinGetClass(A_ScriptHwnd))
 CablePanelInit()
 
@@ -99,6 +104,7 @@ ShowAutomationPanel() {
     fileCount := AutomationSelectedFilePaths.Length
     hasFiles := fileCount > 0
     hasDwg := SelectedDwgPath != ""
+    hasTrustedDwgSource := GetTrustedDwgSources().Length > 0
     colors := ModernPanelColors()
 
     ui := ModernPanelCreate("自动化工具面板")
@@ -108,7 +114,7 @@ ShowAutomationPanel() {
     if (colors["sidebar"] != "") {
         sidebarStyle := ModernPanelStyle(colors["sidebar"], colors["text"])
         sidebarStyle["radius"] := 0
-        ModernPanelLabelAt(ui, 0, 0, 188, 540, "", sidebarStyle)
+        ModernPanelLabelAt(ui, 0, 0, 188, 586, "", sidebarStyle)
     }
     ModernPanelLabelAt(ui, 26, 20, 146, 26, "自动化工具", ModernPanelTextStyle(colors["text"], 13, true))
     ModernPanelLabelAt(ui, 26, 46, 146, 18, "Ctrl+Shift+E", ModernPanelTextStyle(colors["secondary"], 9))
@@ -124,10 +130,10 @@ ShowAutomationPanel() {
     }
     ui["nav"] := navItems
 
-    ModernPanelLabelAt(ui, 26, 500, 160, 20, "Esc 关闭 · Ctrl+Tab 切换", ModernPanelTextStyle(colors["secondary"], 9))
+    ModernPanelLabelAt(ui, 26, 546, 160, 20, "Esc 关闭 · Ctrl+Tab 切换", ModernPanelTextStyle(colors["secondary"], 9))
     separatorStyle := ModernPanelStyle(colors["separator"], colors["text"])
     separatorStyle["radius"] := 0
-    ModernPanelLabelAt(ui, 188, 0, 1, 540, "", separatorStyle)
+    ModernPanelLabelAt(ui, 188, 0, 1, 586, "", separatorStyle)
 
     ; 右侧顶部信息行：识别到的选区（同桌宠菜单顶部的状态信息行）
     infoStyle := ModernPanelStyle(colors["info"], colors["text"])
@@ -146,29 +152,36 @@ ShowAutomationPanel() {
     ModernPanelBeginPage(ui, "table", contentX, contentY, contentW)
     tableEnabled := true
     ; @@SPREADSHEET_BUTTONS_BEGIN
+    ; R(名称, 回调)：执行成功后记为“上次操作”，可用“重复上次操作”按钮套用到新选区（类似 Excel 的 F4）。
+    R := RepeatableSpreadsheetCommand
     ModernPanelSection(ui, "文本")
     ModernPanelRow(ui
-        , ["添加前缀", AddTextToExcelSelection.Bind("prefix"), tableEnabled, Chr(0xE710)]
-        , ["添加后缀", AddTextToExcelSelection.Bind("suffix"), tableEnabled, Chr(0xE710)])
+        , ["添加前缀", R("添加前缀", AddTextToExcelSelection.Bind("prefix")), tableEnabled, Chr(0xE710)]
+        , ["添加后缀", R("添加后缀", AddTextToExcelSelection.Bind("suffix")), tableEnabled, Chr(0xE710)])
     ModernPanelRow(ui
-        , ["删除前端字符", RemoveTextFromExcelSelection.Bind("start"), tableEnabled, Chr(0xE738)]
-        , ["删除末尾字符", RemoveTextFromExcelSelection.Bind("end"), tableEnabled, Chr(0xE738)])
-    ModernPanelRow(ui, ["删除括号内容并合并换行", RemoveBracketTextFromExcelSelection, tableEnabled, Chr(0xE74D)])
+        , ["删除前端字符", R("删除前端字符", RemoveTextFromExcelSelection.Bind("start")), tableEnabled, Chr(0xE738)]
+        , ["删除末尾字符", R("删除末尾字符", RemoveTextFromExcelSelection.Bind("end")), tableEnabled, Chr(0xE738)])
+    ModernPanelRow(ui, ["删除括号内容并合并换行", R("删除括号内容", RemoveBracketTextFromExcelSelection), tableEnabled, Chr(0xE74D)])
     ModernPanelSpace(ui, 6)
     ModernPanelSection(ui, "整理")
     ModernPanelRow(ui
-        , ["去重整理", DedupeAndGroupExcelSelectedColumn, tableEnabled, Chr(0xE71C)]
-        , ["按电缆截面排序", SortCableRowsByCrossSection, tableEnabled, Chr(0xE8CB)])
+        , ["去重整理", R("去重整理", DedupeAndGroupExcelSelectedColumn), tableEnabled, Chr(0xE71C)]
+        , ["按电缆截面排序", R("电缆截面排序", SortCableRowsByCrossSection), tableEnabled, Chr(0xE8CB)])
     ModernPanelRow(ui
-        , ["合并相同内容并居中", MergeIdenticalSpreadsheetCells, tableEnabled, Chr(0xE8C8)]
-        , ["拆分合并单元格并填充", SplitMergedSpreadsheetCellsAndFill, tableEnabled, Chr(0xE8C6)])
+        , ["标出重复项", R("标出重复项", HighlightSpreadsheetDuplicates), tableEnabled, Chr(0xE7E6)]
+        , ["比较两列差异", R("比较两列差异", CompareSpreadsheetColumns), tableEnabled, Chr(0xE8AB)])
+    ModernPanelRow(ui
+        , ["合并相同内容并居中", R("合并相同内容", MergeIdenticalSpreadsheetCells), tableEnabled, Chr(0xE8C8)]
+        , ["拆分合并单元格并填充", R("拆分合并单元格", SplitMergedSpreadsheetCellsAndFill), tableEnabled, Chr(0xE8C6)])
     ModernPanelSpace(ui, 6)
     ModernPanelSection(ui, "数字与其他")
     ModernPanelRow(ui
-        , ["数字向上取十位", RoundSpreadsheetSelectionUpToTen, tableEnabled, Chr(0xE8EF)]
-        , ["数字批量加减", OffsetSpreadsheetSelectionNumbers, tableEnabled, Chr(0xE70F)])
+        , ["数字向上取十位", R("向上取十位", RoundSpreadsheetSelectionUpToTen), tableEnabled, Chr(0xE8EF)]
+        , ["数字批量加减", R("数字批量加减", OffsetSpreadsheetSelectionNumbers), tableEnabled, Chr(0xE70F)])
+    ModernPanelRow(ui, ["导出选区信息（给 AI）", ExportSpreadsheetSelection, tableEnabled, Chr(0xE72D)])
     ModernPanelRow(ui
-        , ["导出选区信息（给 AI）", ExportSpreadsheetSelection, tableEnabled, Chr(0xE72D)]
+        , [IsObject(SpreadsheetRepeatAction) ? "重复：" . SpreadsheetRepeatAction["name"] : "重复上次操作"
+            , RepeatLastSpreadsheetCommand, tableEnabled && IsObject(SpreadsheetRepeatAction), Chr(0xE8EE)]
         , ["撤销上次操作" . (ExcelCommandUndoStack.Length ? "（" . ExcelCommandUndoStack.Length . "）" : "")
             , UndoExcelCommandPanelAction, tableEnabled && ExcelCommandUndoStack.Length > 0, Chr(0xE7A7)])
     ; @@SPREADSHEET_BUTTONS_END
@@ -185,6 +198,8 @@ ShowAutomationPanel() {
     ModernPanelRow(ui, ["AutoCAD", OpenSelectedDwg.Bind("autocad"), hasDwg, Chr(0xE8E5)]
         , ["中望 CAD", OpenSelectedDwg.Bind("zwcad"), hasDwg, Chr(0xE8E5)]
         , ["快速看图", OpenSelectedDwg.Bind("quickview"), hasDwg, Chr(0xE890)])
+    ; 选中 DWG 或文件夹即可用；副本存到“可信DWG”子文件夹，AutoCAD 打开不再提示“非 Autodesk DWG”
+    ModernPanelRow(ui, ["批量转可信 DWG（去掉 AutoCAD 非 Autodesk 提示）", ConvertSelectedToTrustedDwg, hasTrustedDwgSource, Chr(0xE8B7)])
     ModernPanelSpace(ui, 6)
     ; 关闭/保存类按钮单独成组，并用“文字联动”一组隔开重载插件按钮，避免重载时误点关闭
     ModernPanelSection(ui, "CAD 里正在编辑的图纸")
@@ -200,6 +215,16 @@ ShowAutomationPanel() {
     ModernPanelSpace(ui, 6)
     ModernPanelSection(ui, "重新加载 AA整合版本.lsp")
     ModernPanelRow(ui, ["重载中望 CAD 插件", ReloadZwcadAaLsp, true, Chr(0xE72C)], ["重载 AutoCAD 插件", ReloadAutocadAaLsp, true, Chr(0xE72C)])
+
+    ModernPanelBeginPage(ui, "cadai", contentX, contentY, contentW)
+    ModernPanelSection(ui, "AI 批量改写（中望 CAD）")
+    ModernPanelRow(ui, ["打开 AI 改文字窗口", OpenCadAiTextWindow, true, Chr(0xE945)])
+    ModernPanelNote(ui, "模板复制多份并按参照表改写：从 CAD 取模板和表格，写要求，AI 出规则，程序展开校验，再写回图纸。", 2)
+    ModernPanelSpace(ui, 6)
+    ModernPanelSection(ui, "文字进出 CAD")
+    ModernPanelRow(ui, ["提取文字及坐标 QW2", RunZwcadCommand.Bind("QW2", "提取文字"), true, Chr(0xE8C8)]
+        , ["写回文字 QW2P", RunZwcadCommand.Bind("QW2P", "写入文字"), true, Chr(0xE70F)])
+    ModernPanelNote(ui, "不开窗口也能用：QW2 的结果贴给任意 AI，要求它按“x,y 文字”原格式返回，复制后点 QW2P。", 2)
 
     ModernPanelBeginPage(ui, "rename", contentX, contentY, contentW)
     ModernPanelSection(ui, "添加")
@@ -243,7 +268,7 @@ ShowAutomationPanel() {
         . "2. 按 Ctrl+Shift+E 打开面板，会自动切到对应页面。`n"
         . "3. 点击按钮执行；没有对应选区的按钮会变灰。", 4)
     ModernPanelSection(ui, "撤销与保存")
-    ModernPanelNote(ui, "表格操作不会自动保存。Excel 中可直接 Ctrl+Z 撤销面板操作；WPS 请用“表格工具”里的撤销按钮。", 3)
+    ModernPanelNote(ui, "表格操作不会自动保存。Excel 中可直接 Ctrl+Z 撤销面板操作；WPS 请用“表格工具”里的撤销按钮。“重复上次操作”把上一次表格操作（含当时输入的文字或数字）直接套用到新选区。", 4)
 
     SelectAutomationPanelPage(ui, panelContext["page"], false)
 
@@ -253,13 +278,14 @@ ShowAutomationPanel() {
 
     AutomationPanelGui := panel
     AutomationPanelUi := ui
-    panel.Show("w656 h540 Center")
+    panel.Show("w656 h586 Center")
 }
 
 AutomationPanelPages() {
     static pages := [
         Map("key", "table", "title", "表格工具", "icon", Chr(0xE80A)),
         Map("key", "dwg", "title", "打开图纸", "icon", Chr(0xE8E5)),
+        Map("key", "cadai", "title", "CAD 文字", "icon", Chr(0xE945)),
         Map("key", "rename", "title", "批量改名", "icon", Chr(0xE8AC)),
         Map("key", "files", "title", "文件处理", "icon", Chr(0xE8A5)),
         Map("key", "ime", "title", "默认输入法", "icon", Chr(0xE765)),
@@ -1243,7 +1269,7 @@ GetSelectedFilePathsFromClipboard(hwnd) {
         Send("^c")
         clipReady := ClipWait(1, 1)
         if clipReady
-            selected := GetClipboardFileDropPaths()
+            selected := ReadClipboardFileDropPathsWithRetry(1000)
         LogPanelDiagnostic("读取剪贴板选区结束", "clipReady=" . clipReady . "; fileCount=" . selected.Length
             . (selected.Length ? "`r`n" . JoinLines(selected) : "`r`nCF_HDROP为空或剪贴板等待超时"))
     } finally {
@@ -1264,10 +1290,34 @@ GetSelectedFilePathsFromClipboard(hwnd) {
     return selected
 }
 
-GetClipboardFileDropPaths() {
+; 资源管理器分多次写入剪贴板格式，ClipWait 返回时 CF_HDROP 可能还没写好，
+; 剪贴板也可能仍被资源管理器或 CopyQ 占用；在时限内每 50ms 重试一次。
+ReadClipboardFileDropPathsWithRetry(timeoutMs) {
+    deadline := A_TickCount + timeoutMs
+    attempts := 0
+    Loop {
+        attempts += 1
+        failure := ""
+        selected := GetClipboardFileDropPaths(&failure)
+        if (failure = "") {
+            if (attempts > 1)
+                LogPanelDiagnostic("CF_HDROP重试成功", "attempts=" . attempts)
+            return selected
+        }
+        if (A_TickCount >= deadline) {
+            LogPanelDiagnostic("CF_HDROP重试超时", "attempts=" . attempts . "; lastFailure=" . failure)
+            return []
+        }
+        Sleep(50)
+    }
+}
+
+; failure 为空表示已读到 CF_HDROP；否则返回可重试的失败原因。
+GetClipboardFileDropPaths(&failure := "") {
     selected := []
+    failure := ""
     if !DllCall("OpenClipboard", "Ptr", 0) {
-        LogPanelDiagnostic("CF_HDROP读取失败", "OpenClipboard失败；lastError=" . A_LastError)
+        failure := "OpenClipboard失败；lastError=" . A_LastError
         return selected
     }
 
@@ -1275,7 +1325,7 @@ GetClipboardFileDropPaths() {
         ; CF_HDROP 是资源管理器复制文件时提供的原生路径列表，不解析剪贴板文本。
         hDrop := DllCall("GetClipboardData", "UInt", 15, "Ptr")
         if !hDrop {
-            LogPanelDiagnostic("剪贴板没有CF_HDROP", "GetClipboardData(CF_HDROP)返回空；lastError=" . A_LastError)
+            failure := "GetClipboardData(CF_HDROP)返回空；lastError=" . A_LastError
             return selected
         }
 
@@ -1592,7 +1642,7 @@ ReloadCadAaLsp(progId, cadName, cadFullName, lspPath) {
     }
 }
 
-AddTextToExcelSelection(position) {
+AddTextToExcelSelection(position, presetText := "") {
     isPrefix := position = "prefix"
     title := isPrefix ? "表格批量添加前缀" : "表格批量添加后缀"
     prompt := isPrefix
@@ -1611,21 +1661,48 @@ AddTextToExcelSelection(position) {
         return
     }
 
-    input := InputBox(prompt, title, "w420 h135")
-    if (input.Result != "OK")
-        return
-
-    addedText := input.Value
+    if (presetText != "") {
+        addedText := presetText
+    } else if isPrefix {
+        addedText := PromptTextWithPresets(prompt . "`n可从下拉框选择常用前缀，也可直接输入。", title
+            , ["ZC-KVVP2-22-", "ZC-YJV22-"])
+    } else {
+        input := InputBox(prompt, title, "w420 h135")
+        if (input.Result != "OK")
+            return
+        addedText := input.Value
+    }
     if (addedText = "")
         return
 
     try {
         action := ApplySpreadsheetTextTransform(context, position, addedText)
-        if IsObject(action)
+        if IsObject(action) {
             PushUndoAction(action)
+            SetSpreadsheetRepeatPending(AddTextToExcelSelection.Bind(position, addedText))
+        }
     } catch as err {
         MsgBox("处理失败：" . err.Message, title, "Icon!")
     }
+}
+
+; 带预设下拉的输入框：可选预设或直接输入，取消返回空字符串。
+PromptTextWithPresets(prompt, title, presets) {
+    result := ""
+    dlg := Gui("+AlwaysOnTop -MinimizeBox", title)
+    dlg.SetFont("s10", "Microsoft YaHei UI")
+    dlg.AddText("w400", prompt)
+    combo := dlg.AddComboBox("w400 r6", presets)
+    okBtn := dlg.AddButton("w90 Default", "确定")
+    cancelBtn := dlg.AddButton("x+10 w90", "取消")
+    okBtn.OnEvent("Click", (*) => (result := combo.Text, dlg.Destroy()))
+    cancelBtn.OnEvent("Click", (*) => dlg.Destroy())
+    dlg.OnEvent("Close", (*) => dlg.Destroy())
+    dlg.OnEvent("Escape", (*) => dlg.Destroy())
+    dlg.Show()
+    combo.Focus()
+    WinWaitClose(dlg.Hwnd)
+    return result
 }
 
 RemoveBracketTextFromExcelSelection() {
@@ -1641,7 +1718,7 @@ RemoveBracketTextFromExcelSelection() {
     }
 }
 
-RemoveTextFromExcelSelection(position) {
+RemoveTextFromExcelSelection(position, presetCount := 0) {
     isStart := position = "start"
     title := isStart ? "表格删除前端字符" : "表格删除末尾字符"
     prompt := isStart
@@ -1660,11 +1737,14 @@ RemoveTextFromExcelSelection(position) {
         return
     }
 
-    input := InputBox(prompt, title, "w460 h155")
-    if (input.Result != "OK")
-        return
-
-    deleteCountText := Trim(input.Value)
+    if (presetCount > 0) {
+        deleteCountText := String(presetCount)
+    } else {
+        input := InputBox(prompt, title, "w460 h155")
+        if (input.Result != "OK")
+            return
+        deleteCountText := Trim(input.Value)
+    }
     if !RegExMatch(deleteCountText, "^\d+$") {
         MsgBox("请输入正整数，例如 1、2、3、4 或 5。", title, "Icon!")
         return
@@ -1678,8 +1758,11 @@ RemoveTextFromExcelSelection(position) {
 
     try {
         action := ApplySpreadsheetTextTransform(context, position, deleteCount)
-        if IsObject(action)
+        if IsObject(action) {
             PushUndoAction(action)
+            SetSpreadsheetRepeatPending(RemoveTextFromExcelSelection.Bind(position, deleteCount)
+                , (isStart ? "删除前端 " : "删除末尾 ") . deleteCount . " 字")
+        }
     } catch as err {
         MsgBox("处理失败：" . err.Message, title, "Icon!")
     }
@@ -2107,16 +2190,18 @@ GetSpreadsheetContext(title := "表格工具", showError := true) {
     global AutomationContextHwnd
 
     processName := ""
-    try processName := StrLower(WinGetProcessName("A"))
+    hwnd := WinExist("A")
+    try processName := StrLower(WinGetProcessName("ahk_id " . hwnd))
     if (processName != "excel.exe" && processName != "et.exe"
         && processName != "wps.exe" && AutomationContextHwnd) {
-        try processName := StrLower(WinGetProcessName("ahk_id " . AutomationContextHwnd))
+        hwnd := AutomationContextHwnd
+        try processName := StrLower(WinGetProcessName("ahk_id " . hwnd))
     }
 
     if (processName = "excel.exe")
-        return ConnectSpreadsheetApplication("Excel.Application", "excel", "Microsoft Excel", title, showError)
+        return ConnectSpreadsheetApplication("Excel.Application", "excel", "Microsoft Excel", title, showError, hwnd)
     if (processName = "et.exe" || processName = "wps.exe")
-        return ConnectSpreadsheetApplication("Ket.Application", "wps", "WPS 表格", title, showError)
+        return ConnectSpreadsheetApplication("Ket.Application", "wps", "WPS 表格", title, showError, hwnd)
 
     excelApp := TryGetActiveComObject("Excel.Application")
     wpsApp := TryGetActiveComObject("Ket.Application")
@@ -2155,7 +2240,7 @@ CaptureSpreadsheetSelectionContext(hwnd) {
         return ""
     }
 
-    app := TryGetActiveComObject(progId)
+    app := GetSpreadsheetApplication(progId, hwnd)
     if !IsObject(app)
         return Map("error", "无法连接当前表格程序，请确认面板与表格都以普通权限运行。")
 
@@ -2175,6 +2260,7 @@ CaptureSpreadsheetSelectionContext(hwnd) {
 
     return Map(
         "progId", progId,
+        "hwnd", hwnd,
         "kind", kind,
         "name", name,
         "workbookFullName", workbookFullName,
@@ -2194,7 +2280,7 @@ GetSpreadsheetSelectionContext(title) {
             return ""
         }
         try {
-            app := TryGetActiveComObject(snapshot["progId"])
+            app := GetSpreadsheetApplication(snapshot["progId"], snapshot.Has("hwnd") ? snapshot["hwnd"] : 0)
             if !IsObject(app)
                 throw Error("原表格程序已经关闭")
 
@@ -2249,8 +2335,8 @@ GetWorkbookByIdentity(app, fullName, name) {
     return ""
 }
 
-ConnectSpreadsheetApplication(progId, kind, name, title, showError) {
-    app := TryGetActiveComObject(progId)
+ConnectSpreadsheetApplication(progId, kind, name, title, showError, hwnd := 0) {
+    app := GetSpreadsheetApplication(progId, hwnd)
     if IsObject(app)
         return Map("app", app, "kind", kind, "name", name)
 
@@ -2263,6 +2349,33 @@ TryGetActiveComObject(progId) {
     try return ComObjActive(progId)
     catch
         return ""
+}
+
+; Excel 刚启动时要等窗口第一次失去焦点才登记到运行对象表，ComObjActive 会失败；
+; 这时改从表格窗口的工作簿子窗口直接取 Application。
+GetSpreadsheetApplication(progId, hwnd := 0) {
+    app := TryGetActiveComObject(progId)
+    if IsObject(app) || !hwnd
+        return app
+    return GetSpreadsheetApplicationFromWindow(hwnd)
+}
+
+GetSpreadsheetApplicationFromWindow(hwnd) {
+    static iid := ""
+    if !iid {
+        iid := Buffer(16)
+        DllCall("ole32\CLSIDFromString", "WStr", "{00020400-0000-0000-C000-000000000046}", "Ptr", iid)  ; IID_IDispatch
+    }
+    child := 0
+    try child := ControlGetHwnd("EXCEL71", "ahk_id " . hwnd)
+    if !child
+        return ""
+    pdisp := 0
+    ; OBJID_NATIVEOM 取到的是工作簿窗口对象
+    if DllCall("oleacc\AccessibleObjectFromWindow", "Ptr", child, "UInt", 0xFFFFFFF0, "Ptr", iid, "Ptr*", &pdisp) != 0 || !pdisp
+        return ""
+    try return ComValue(9, pdisp).Application
+    return ""
 }
 
 FindLatestUndoActionIndex(provider) {
@@ -2320,6 +2433,10 @@ RestoreUndoAction(app, action) {
             }
             if (item.Has("kind") && item["kind"] = "unmergeFill") {
                 RestoreUnmergedRangeUndoItem(currentWs, item)
+                continue
+            }
+            if (item.Has("kind") && item["kind"] = "interior") {
+                RestoreInteriorUndoItem(currentWs, item)
                 continue
             }
 
@@ -2608,6 +2725,75 @@ ReplaceCustomTextInSelectedFileNames() {
     }
 
     ExecuteFileRenameOperations(operations, title)
+}
+
+; 选区中可交给批量转可信 DWG 的路径：.dwg 文件和文件夹（文件夹里的 DWG 由脚本收集）
+GetTrustedDwgSources() {
+    global AutomationSelectedFilePaths
+    sources := []
+    for _, path in AutomationSelectedFilePaths {
+        if DirExist(path) {
+            sources.Push(path)
+            continue
+        }
+        SplitPath(path, , , &extension)
+        if (StrLower(extension) = "dwg")
+            sources.Push(path)
+    }
+    return sources
+}
+
+; 调用 AutoCAD2018_lisp\tools\trusted_dwg_batch.py：用 accoreconsole 逐张 -EXPORTTOAUTOCAD，
+; 副本存到源文件旁的“可信DWG”文件夹，原文件不改，也不操作正在运行的 CAD。
+; 在可见的命令行窗口里运行，进度和结果都显示在窗口中，结束后按任意键关闭。
+ConvertSelectedToTrustedDwg() {
+    global TrustedDwgScript
+    title := "批量转可信 DWG"
+    sources := GetTrustedDwgSources()
+    if (sources.Length = 0) {
+        MsgBox("请先在资源管理器或桌面中选中 DWG 文件或文件夹，再打开面板。", title, "Icon!")
+        return
+    }
+    if !FileExist(TrustedDwgScript) {
+        MsgBox("找不到转换脚本：`n" . TrustedDwgScript, title, "Icon!")
+        return
+    }
+
+    dwgCount := 0, dirCount := 0, names := []
+    for _, path in sources {
+        if DirExist(path)
+            dirCount += 1
+        else
+            dwgCount += 1
+        SplitPath(path, &name)
+        names.Push(name)
+    }
+    recurse := false
+    if (dirCount > 0) {
+        answer := MsgBox("选中了 " . dirCount . " 个文件夹" . (dwgCount ? "、" . dwgCount . " 张图纸" : "") . "：`n`n"
+            . JoinLines(names, 10) . "`n`n是否连子文件夹里的图纸一起转换？`n（是：包含子文件夹；否：只转所选文件夹这一层）"
+            , title, "YesNoCancel Icon? Default2")
+        if (answer = "Cancel")
+            return
+        recurse := answer = "Yes"
+    } else {
+        prompt := "将转换 " . dwgCount . " 张图纸：`n`n" . JoinLines(names, 10)
+            . "`n`n副本存到各自文件夹下的“可信DWG”里，原文件不改；已是可信 DWG 的自动跳过。继续？"
+        if (MsgBox(prompt, title, "OKCancel Icon? Default1") != "OK")
+            return
+    }
+
+    listPath := A_Temp . "\trusted-dwg-list-" . A_NowUTC . "-" . Random(100000, 999999) . ".txt"
+    try {
+        FileAppend(JoinLines(sources) . "`r`n", listPath, "UTF-8")
+        commandLine := A_ComSpec . ' /c title ' . title . ' & python "' . TrustedDwgScript . '" --from-file "' . listPath . '"'
+            . (recurse ? " --recurse" : "") . ' & del "' . listPath . '" & echo. & pause'
+        Run(commandLine)
+    } catch as err {
+        if FileExist(listPath)
+            try FileDelete(listPath)
+        MsgBox("启动转换失败：`n`n" . err.Message, title, "Icon!")
+    }
 }
 
 MergeSelectedPdfFiles() {
@@ -3095,6 +3281,48 @@ JoinLines(lines, limit := 0) {
     return text
 }
 
+; ===== 重复上次操作（类似 Excel F4）=====
+; 包装表格按钮：执行前后比较撤销栈栈顶，出现新的撤销记录才算成功，并记为“上次操作”。
+; 需要输入的功能成功后调用 SetSpreadsheetRepeatPending 交回带参数的回调，重复时不再弹输入框。
+RepeatableSpreadsheetCommand(name, callback) {
+    return RunRepeatableSpreadsheetCommand.Bind(name, callback)
+}
+
+RunRepeatableSpreadsheetCommand(name, callback, *) {
+    global ExcelCommandUndoStack, SpreadsheetRepeatAction, SpreadsheetRepeatPending
+    SpreadsheetRepeatPending := ""
+    before := ExcelCommandUndoStack.Length ? ExcelCommandUndoStack[ExcelCommandUndoStack.Length] : ""
+    try {
+        callback.Call()
+    } finally {
+        after := ExcelCommandUndoStack.Length ? ExcelCommandUndoStack[ExcelCommandUndoStack.Length] : ""
+        if (IsObject(after) && !(IsObject(before) && ObjPtr(before) = ObjPtr(after))) {
+            pending := SpreadsheetRepeatPending
+            SpreadsheetRepeatAction := Map(
+                "name", IsObject(pending) && pending["name"] != "" ? pending["name"] : name,
+                "baseName", name,
+                "run", IsObject(pending) ? pending["run"] : callback
+            )
+        }
+        SpreadsheetRepeatPending := ""
+    }
+}
+
+SetSpreadsheetRepeatPending(callback, name := "") {
+    global SpreadsheetRepeatPending
+    SpreadsheetRepeatPending := Map("run", callback, "name", name)
+}
+
+RepeatLastSpreadsheetCommand(*) {
+    global SpreadsheetRepeatAction
+    if !IsObject(SpreadsheetRepeatAction) {
+        MsgBox("还没有可重复的表格操作。请先执行一次表格工具里的功能。", "重复上次操作", "Icon!")
+        return
+    }
+    action := SpreadsheetRepeatAction
+    RunRepeatableSpreadsheetCommand(action["baseName"], action["run"])
+}
+
 SpreadsheetHasNativeUndo(app) {
     try {
         undoControl := app.CommandBars.FindControl(1, 128)
@@ -3132,7 +3360,7 @@ AddUndoRange(action, range) {
 }
 
 ; Formula 写回会把 =开头的常量文字变成公式、数字文字变成数值。
-; 对非公式的字符串明确添加文字前缀，恢复时保留原始类型。
+; 对会被误解析的非公式字符串添加文字前缀 '，恢复时保留原始类型。
 GetSpreadsheetUndoFormula(range) {
     formula := range.Formula
     allFormulas := range.HasFormula
@@ -3142,7 +3370,7 @@ GetSpreadsheetUndoFormula(range) {
     rows := range.Rows.Count
     columns := range.Columns.Count
     if (rows = 1 && columns = 1)
-        return Type(values) = "String" && values != "" ? "'" . values : formula
+        return Type(values) = "String" && values != "" ? SpreadsheetLiteralText(values) : formula
     formulaCells := Map()
     if (allFormulas != false) {
         app := range.Application
@@ -3167,7 +3395,7 @@ GetSpreadsheetUndoFormula(range) {
             column := A_Index
             value := values[row, column]
             if (Type(value) = "String" && value != "" && !formulaCells.Has(row . ":" . column))
-                formula[row, column] := "'" . value
+                formula[row, column] := SpreadsheetLiteralText(value)
         }
     }
     return formula

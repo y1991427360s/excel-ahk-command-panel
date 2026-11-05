@@ -1,4 +1,4 @@
-#Requires AutoHotkey v2.0
+﻿#Requires AutoHotkey v2.0
 #SingleInstance Ignore
 global SetupLog := EnvGet("LOCALAPPDATA") . "\SpreadsheetToolsShare-install.log"
 global SetupQuiet := false
@@ -41,7 +41,7 @@ try {
     LogSetup("完成 " . mode)
     if !SetupQuiet
         MsgBox(mode = "install"
-            ? "安装成功！`n`n打开 Excel 或 WPS，选中单元格，再按 Ctrl+Shift+E。`n`n已创建桌面入口和开机启动项。"
+            ? "安装成功！`n`n在 Excel / WPS 里选中单元格，或在资源管理器里选中文件，再按 Ctrl+Shift+E。`n`n已创建桌面入口和开机启动项。"
             : "卸载完成。", "表格工具面板", "Iconi")
     ExitApp(0)
 } catch as err {
