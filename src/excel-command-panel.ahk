@@ -247,8 +247,9 @@ ShowAutomationPanel() {
         , ["统计图幅", CountSelectedDrawingSheetSizes, hasFiles, Chr(0xE9D2)])
     ModernPanelRow(ui, ["Word 转 PDF", ConvertSelectedWordFilesToPdf, hasFiles, Chr(0xE8A5)]
         , ["Excel 转 PDF", ConvertSelectedExcelFilesToPdf, hasFiles, Chr(0xE80A)])
-    ModernPanelRow(ui, ["MP4 转 GIF", ConvertSelectedVideosToGif, hasFiles, Chr(0xE714)])
-    ModernPanelNote(ui, "PDF 按文件名顺序合并到首个 PDF 所在文件夹；统计图幅可选 PDF、文件夹或 rar/zip/7z。Word、Excel、视频转为同目录同名 PDF / GIF，覆盖前会确认。", 3)
+    ModernPanelRow(ui, ["MP4 转 GIF", ConvertSelectedVideosToGif, hasFiles, Chr(0xE714)]
+        , ["压缩视频", CompressSelectedVideos, hasFiles, Chr(0xE73F)])
+    ModernPanelNote(ui, "PDF 按文件名顺序合并到首个 PDF 所在文件夹；统计图幅可选 PDF、文件夹或 rar/zip/7z。Word、Excel、视频转为同目录同名 PDF / GIF，压缩视频输出“原名_压缩.mp4”，覆盖前会确认。", 3)
 
     ModernPanelBeginPage(ui, "ime", contentX, contentY, contentW)
     ModernPanelSection(ui, "替代默认输入法")
@@ -3089,9 +3090,43 @@ CountSelectedDrawingSheetSizes() {
     }
 }
 
-; 视频转 GIF：选中的视频逐个转为同目录同名 .gif，经 toolsideo_tools.py 调 ffmpeg 两遍调色板，源视频不改。
+; 视频转 GIF：选中的视频逐个转为同目录同名 .gif，经 tools\video_tools.py 调 ffmpeg 两遍调色板，源视频不改。
 ConvertSelectedVideosToGif() {
     title := "MP4 转 GIF"
+    videos := GetSelectedVideoPaths(title)
+    if (videos.Length = 0)
+        return
+    input := InputBox("将转换 " . videos.Length . " 个视频：`n" . JoinLines(videos, 5)
+        . "`n`n输入“宽度, 帧率”。宽度 0 为原尺寸（默认）；填像素宽度则按比例缩小，不会放大。帧率越低文件越小。", title, "w520 h" . (190 + Min(videos.Length, 5) * 16), "0, 12")
+    if (input.Result != "OK")
+        return
+    if !RegExMatch(input.Value, "^\s*(\d+)\s*[,，\s]\s*(\d+)\s*$", &m) || m[2] < 1 || m[2] > 50 {
+        MsgBox("格式不对，请输入例如 0, 12 或 800, 12（帧率 1 ~ 50）。", title, "Icon!")
+        return
+    }
+    RunVideoTool(title, videos, "gif --width " . Integer(m[1]) . " --fps " . Integer(m[2]), ".gif", "转为 GIF")
+}
+
+; 压缩视频：x264 按 CRF 画质压缩（与小丸工具箱同一思路），输出同目录“原名_压缩.mp4”，源视频不改。
+CompressSelectedVideos() {
+    title := "压缩视频"
+    videos := GetSelectedVideoPaths(title)
+    if (videos.Length = 0)
+        return
+    input := InputBox("将压缩 " . videos.Length . " 个视频：`n" . JoinLines(videos, 5)
+        . "`n`n输入“画质 CRF, 最大宽度”。CRF 越大文件越小：23 ~ 24 几乎看不出差别（默认 24），28 明显更小；"
+        . "宽度 0 保持原尺寸，填 1280 等可再缩小一大截。", title, "w540 h" . (205 + Min(videos.Length, 5) * 16), "24, 0")
+    if (input.Result != "OK")
+        return
+    if !RegExMatch(input.Value, "^\s*(\d+)\s*[,，\s]\s*(\d+)\s*$", &m) || m[1] < 16 || m[1] > 40 {
+        MsgBox("格式不对，请输入例如 24, 0 或 28, 1280（CRF 16 ~ 40）。", title, "Icon!")
+        return
+    }
+    RunVideoTool(title, videos, "compress --crf " . Integer(m[1]) . " --width " . Integer(m[2]), "_压缩.mp4", "压缩")
+}
+
+; 取选区里的视频文件（去重、按文件名自然排序）；没有时提示并返回空数组。
+GetSelectedVideoPaths(title) {
     videos := []
     seen := Map()
     for _, path in GetSelectedFilePaths() {
@@ -3101,59 +3136,61 @@ ConvertSelectedVideosToGif() {
             videos.Push(path)
         }
     }
-    if (videos.Length = 0) {
-        MsgBox("请先在资源管理器或桌面选中视频文件（mp4、mov、mkv、avi、webm 等），再打开面板转换。", title, "Icon!")
-        return
-    }
-    SortPathsByFileNameLogical(videos)
+    if (videos.Length = 0)
+        MsgBox("请先在资源管理器或桌面选中视频文件（mp4、mov、mkv、avi、webm 等），再打开面板。", title, "Icon!")
+    return SortPathsByFileNameLogical(videos)
+}
 
+; 运行 tools\video_tools.py：先确认会被覆盖的输出，执行期间显示提示，结果来自脚本写的日志。
+RunVideoTool(title, videos, toolArgs, outputSuffix, actionName) {
     script := A_ScriptDir . "\..\tools\video_tools.py"
     if !FileExist(script) {
         MsgBox("找不到视频工具脚本：`n" . script, title, "Icon!")
         return
     }
-
-    input := InputBox("将转换 " . videos.Length . " 个视频：`n" . JoinLines(videos, 5)
-        . "`n`n输入“宽度, 帧率”。宽度 0 为原尺寸（不会放大），帧率越低文件越小。", title, "w520 h" . (190 + Min(videos.Length, 5) * 16), "800, 12")
-    if (input.Result != "OK")
-        return
-    if !RegExMatch(input.Value, "^\s*(\d+)\s*[,，\s]\s*(\d+)\s*$", &m) || m[2] < 1 || m[2] > 50 {
-        MsgBox("格式不对，请输入例如 800, 12（帧率 1 ~ 50）。", title, "Icon!")
-        return
-    }
-    width := Integer(m[1]), fps := Integer(m[2])
-
     existing := []
     for _, path in videos {
         SplitPath(path, , &dir, , &nameNoExt)
-        if FileExist(dir . "\" . nameNoExt . ".gif")
-            existing.Push(dir . "\" . nameNoExt . ".gif")
+        if FileExist(dir . "\" . nameNoExt . outputSuffix)
+            existing.Push(dir . "\" . nameNoExt . outputSuffix)
     }
     if (existing.Length > 0
-        && MsgBox("以下同名 GIF 已存在，转换后会覆盖：`n`n" . JoinLines(existing, 8) . "`n`n继续吗？", title, "YesNo Icon? Default2") != "Yes")
+        && MsgBox("以下文件已存在，处理后会覆盖：`n`n" . JoinLines(existing, 8) . "`n`n继续吗？", title, "YesNo Icon? Default2") != "Yes")
         return
 
-    logPath := A_Temp . "ideo-gif-" . A_NowUTC . "-" . Random(100000, 999999) . ".txt"
-    commandLine := 'python "' . script . '" gif --width ' . width . ' --fps ' . fps . ' --log "' . logPath . '"'
+    uniqueSuffix := A_NowUTC . "-" . Random(100000, 999999)
+    logPath := A_Temp . "\video-tool-" . uniqueSuffix . ".txt"
+    errPath := A_Temp . "\video-tool-" . uniqueSuffix . ".err"
+    commandLine := 'python "' . script . '" ' . toolArgs . ' --log "' . logPath . '"'
     for _, path in videos
         commandLine .= ' "' . path . '"'
+    ; 经 cmd 收集 stderr：Python 没能写日志时（找不到 python、启动即报错）也能显示原因
+    commandLine := A_ComSpec . ' /c "' . commandLine . ' 2>"' . errPath . '""'
 
-    ToolTip("正在把 " . videos.Length . " 个视频转为 GIF，长视频需要一些时间，请稍候…")
+    ToolTip("正在" . actionName . " " . videos.Length . " 个视频，长视频需要一些时间，请稍候…")
     try {
         exitCode := RunWait(commandLine, , "Hide")
         ToolTip()
         report := FileExist(logPath) ? FileRead(logPath, "UTF-8") : ""
         if (exitCode != 0 || report = "") {
-            MsgBox((report != "" ? report : "转换失败，没有得到结果。") . "`n`n退出代码：" . exitCode, title, "Icon!")
+            if (report = "") {
+                errText := FileExist(errPath) ? Trim(FileRead(errPath, "CP0"), " `r`n") : ""
+                report := actionName . "失败，没有得到结果。" . (errText != "" ? "`n`n" . SubStr(errText, -1500) : "")
+            }
+            MsgBox(report . "`n`n退出代码：" . exitCode, title, "Icon!")
             return
         }
-        TrayTip(videos.Length = 1 ? report : "已转换 " . videos.Length . " 个视频为 GIF。", title, 1)
+        if (videos.Length = 1)
+            TrayTip(report, title, 1)
+        else
+            MsgBox(report, title, "Iconi")
     } catch as err {
         ToolTip()
-        MsgBox("视频转 GIF 失败：`n`n" . err.Message, title, "Icon!")
+        MsgBox(title . "失败：`n`n" . err.Message, title, "Icon!")
     } finally {
-        if FileExist(logPath)
-            try FileDelete(logPath)
+        for _, tempPath in [logPath, errPath]
+            if FileExist(tempPath)
+                try FileDelete(tempPath)
     }
 }
 
