@@ -243,10 +243,11 @@ ShowAutomationPanel() {
 
     ModernPanelBeginPage(ui, "files", contentX, contentY, contentW)
     ModernPanelSection(ui, "转换与合并")
-    ModernPanelRow(ui, ["合并选中的 PDF", MergeSelectedPdfFiles, hasFiles, Chr(0xE8F1)])
+    ModernPanelRow(ui, ["合并选中的 PDF", MergeSelectedPdfFiles, hasFiles, Chr(0xE8F1)]
+        , ["统计图幅", CountSelectedDrawingSheetSizes, hasFiles, Chr(0xE9D2)])
     ModernPanelRow(ui, ["Word 转 PDF", ConvertSelectedWordFilesToPdf, hasFiles, Chr(0xE8A5)]
         , ["Excel 转 PDF", ConvertSelectedExcelFilesToPdf, hasFiles, Chr(0xE80A)])
-    ModernPanelNote(ui, "PDF 合并后保存到首个 PDF 所在文件夹；Word、Excel 转换后保存为同目录同名 PDF，Excel 会导出整个工作簿。覆盖已有 PDF 前会先确认。", 3)
+    ModernPanelNote(ui, "PDF 按文件名顺序合并到首个 PDF 所在文件夹；统计图幅可选 PDF、文件夹或 rar/zip/7z。Word、Excel 转为同目录同名 PDF，覆盖前会确认。", 3)
 
     ModernPanelBeginPage(ui, "ime", contentX, contentY, contentW)
     ModernPanelSection(ui, "替代默认输入法")
@@ -355,7 +356,7 @@ DescribeAutomationPanelContext() {
         documentCount := 0
         for filePath in AutomationSelectedFilePaths {
             SplitPath(filePath, , , &extension)
-            if RegExMatch(extension, "i)^(pdf|docx?|docm|xlsx?|xlsm|xlsb)$")
+            if RegExMatch(extension, "i)^(pdf|docx?|docm|xlsx?|xlsm|xlsb|rar|zip|7z)$")
                 documentCount += 1
         }
         SplitPath(AutomationSelectedFilePaths[1], &firstName)
@@ -1686,6 +1687,36 @@ AddTextToExcelSelection(position, presetText := "") {
     }
 }
 
+; 带可滚动清单的确认框：清单带序号、可上下滚动看全部条目；确定返回 true。
+; 默认焦点在“取消”，与原 MsgBox Default2 一致，避免误按回车直接执行。
+ConfirmWithScrollList(title, header, items, footer := "") {
+    confirmed := false
+    dlg := Gui("+AlwaysOnTop -MinimizeBox", title)
+    dlg.BackColor := "FFFFFF"
+    dlg.MarginX := 16, dlg.MarginY := 14
+    dlg.SetFont("s10 c1F2329", "Microsoft YaHei UI")
+    dlg.AddText("w600", header)
+    lv := dlg.AddListView("w600 r16 -Multi NoSort NoSortHdr Grid", ["序号", "文件名"])
+    for index, item in items
+        lv.Add(, index, item)
+    lv.ModifyCol(1, "56 Integer Center")
+    lv.ModifyCol(2, "AutoHdr")
+    if (footer != "") {
+        dlg.SetFont("s10 c6B7280")
+        dlg.AddText("w600", footer)
+    }
+    okBtn := dlg.AddButton("x368 w120", "确定")
+    cancelBtn := dlg.AddButton("x+8 w120 Default", "取消")
+    okBtn.OnEvent("Click", (*) => (confirmed := true, dlg.Destroy()))
+    cancelBtn.OnEvent("Click", (*) => dlg.Destroy())
+    dlg.OnEvent("Close", (*) => dlg.Destroy())
+    dlg.OnEvent("Escape", (*) => dlg.Destroy())
+    dlg.Show()
+    cancelBtn.Focus()
+    WinWaitClose(dlg.Hwnd)
+    return confirmed
+}
+
 ; 带预设下拉的输入框：可选预设或直接输入，取消返回空字符串。
 PromptTextWithPresets(prompt, title, presets) {
     result := ""
@@ -2813,6 +2844,10 @@ MergeSelectedPdfFiles() {
         return
     }
 
+    ; 资源管理器 Ctrl+C 给出的顺序不可控（常把焦点文件排第一），
+    ; 统一按文件名自然排序（与资源管理器“名称”排序一致：ML2 在 ML10 之前）。
+    SortPathsByFileNameLogical(pdfFiles)
+
     input := InputBox("请输入合并后的文件名，例如：合并结果.pdf", title, "w460 h145", "合并结果.pdf")
     if (input.Result != "OK")
         return
@@ -2838,10 +2873,8 @@ MergeSelectedPdfFiles() {
         SplitPath(path, &fileName)
         previewLines.Push(fileName)
     }
-    prompt := "将按当前选中顺序合并 " . pdfFiles.Length . " 个 PDF：`n`n"
-        . JoinLines(previewLines, 10)
-        . "`n`n输出位置：" . outputPath . "`n`n继续？"
-    if (MsgBox(prompt, title, "OKCancel Icon? Default2") != "OK")
+    if !ConfirmWithScrollList(title, "将按文件名顺序合并 " . pdfFiles.Length . " 个 PDF（列表可上下滚动查看全部顺序）："
+        , previewLines, "输出位置：" . outputPath . "`n`n继续？")
         return
 
     uniqueSuffix := A_NowUTC . "-" . Random(100000, 999999)
@@ -2888,6 +2921,90 @@ MergeSelectedPdfFiles() {
         if FileExist(scriptPath)
             try FileDelete(scriptPath)
     }
+}
+
+CountSelectedDrawingSheetSizes() {
+    title := "统计图幅"
+    script := A_ScriptDir . "\..\tools\drawing_sheet_sizes.py"
+    if !FileExist(script) {
+        MsgBox("找不到统计脚本：`n" . script, title, "Icon!")
+        return
+    }
+
+    sources := []
+    for _, path in GetSelectedFilePaths() {
+        SplitPath(path, , , &extension)
+        if (DirExist(path) || RegExMatch(extension, "i)^(pdf|rar|zip|7z)$"))
+            sources.Push(path)
+    }
+    if (sources.Length = 0) {
+        MsgBox("请先在资源管理器或桌面选中 PDF、装 PDF 的文件夹或压缩包（rar/zip/7z），再打开面板统计。", title, "Icon!")
+        return
+    }
+    SortPathsByFileNameLogical(sources)
+
+    uniqueSuffix := A_NowUTC . "-" . Random(100000, 999999)
+    reportPath := A_Temp . "\sheet-size-report-" . uniqueSuffix . ".txt"
+    rowPath := A_Temp . "\sheet-size-row-" . uniqueSuffix . ".txt"
+    commandLine := 'python "' . script . '" --report "' . reportPath . '" --row "' . rowPath . '"'
+    for _, path in sources
+        commandLine .= ' "' . RTrim(path, "\") . '"'
+
+    ToolTip("正在统计图幅，压缩包需要先解压，请稍候…")
+    try {
+        exitCode := RunWait(commandLine, , "Hide")
+        ToolTip()
+        report := FileExist(reportPath) ? FileRead(reportPath, "UTF-8") : ""
+        row := FileExist(rowPath) ? FileRead(rowPath, "UTF-8") : ""
+        if (report = "") {
+            MsgBox("统计失败。请确认本机 Python 已安装 pypdf。`n`n退出代码：" . exitCode, title, "Icon!")
+            return
+        }
+        if (exitCode != 0) {
+            MsgBox(report, title, "Icon!")
+            return
+        }
+        ; 明细过长时只在对话框里显示前面部分，完整报告可复制
+        shown := StrLen(report) > 2400 ? SubStr(report, 1, 2400) . "`n…（明细较多，已截断）" : report
+        choice := MsgBox(shown . "`n`n是：复制为打印明细表一行（A0 ~ A4 共 23 列，粘贴到“A0”列）`n否：复制完整统计文字"
+            , title, "YesNoCancel Iconi Default1")
+        if (choice = "Yes") {
+            A_Clipboard := row
+            TrayTip("已复制 23 列图幅数量，可直接粘贴到打印明细表的 A0 列。", title, 1)
+        } else if (choice = "No") {
+            A_Clipboard := report
+            TrayTip("已复制完整统计文字。", title, 1)
+        }
+    } catch as err {
+        ToolTip()
+        MsgBox("统计图幅失败：`n`n" . err.Message, title, "Icon!")
+    } finally {
+        for _, tempPath in [reportPath, rowPath]
+            if FileExist(tempPath)
+                try FileDelete(tempPath)
+    }
+}
+
+SortPathsByFileNameLogical(paths) {
+    ; 插入排序：先比文件名（StrCmpLogicalW，资源管理器同款），同名再比完整路径。
+    loop paths.Length - 1 {
+        i := A_Index + 1
+        current := paths[i]
+        SplitPath(current, &currentName)
+        j := i - 1
+        while (j >= 1) {
+            SplitPath(paths[j], &otherName)
+            cmp := DllCall("shlwapi\StrCmpLogicalW", "WStr", otherName, "WStr", currentName, "Int")
+            if (cmp = 0)
+                cmp := DllCall("shlwapi\StrCmpLogicalW", "WStr", paths[j], "WStr", current, "Int")
+            if (cmp <= 0)
+                break
+            paths[j + 1] := paths[j]
+            j--
+        }
+        paths[j + 1] := current
+    }
+    return paths
 }
 
 ConvertSelectedExcelFilesToPdf() {
