@@ -210,8 +210,11 @@ ShowSharePanel() {
     }
 }
 
-; 通过资源管理器原生 Ctrl+C 读取当前选中的文件（CF_HDROP），读取后恢复原剪贴板。
+; 读取资源管理器/桌面当前选中的文件；Shell 方式出错才回退到 Ctrl+C（CF_HDROP），并按需恢复原剪贴板。
 ShareReadSelectedFiles(hwnd) {
+    ; 资源管理器窗口直接读 Shell 视图选区，不碰剪贴板；桌面被酷呆桌面接管时系统视图选区不可靠，用 Ctrl+C
+    if !(IsDesktopWindow(hwnd) && IsDesktopOrganizerRunning())
+        try return GetShellViewSelectedFilePaths(hwnd)
     selected := []
     savedClipboard := ClipboardAll()
     try {
@@ -219,12 +222,14 @@ ShareReadSelectedFiles(hwnd) {
             WinActivate("ahk_id " . hwnd)
         if (WinExist("A") != hwnd && !WinWaitActive("ahk_id " . hwnd, , 2))
             return selected
-        A_Clipboard := ""
+        ; 不先清空剪贴板：没选文件时剪贴板不变，事后也不写回，避免剪贴板记录工具多记一条
+        clipSequence := DllCall("GetClipboardSequenceNumber", "UInt")
         Send("^c")
-        if ClipWait(1, 1)
-            selected := GetClipboardFileDropPaths()
+        if WaitClipboardSequenceChange(clipSequence, 1000)
+            selected := ReadClipboardFileDropPathsWithRetry(1000)
     } finally {
-        A_Clipboard := savedClipboard
+        if (IsSet(clipSequence) && DllCall("GetClipboardSequenceNumber", "UInt") != clipSequence)
+            RestoreClipboardWithoutHistory(savedClipboard)
     }
     return selected
 }

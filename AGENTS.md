@@ -37,13 +37,15 @@
 - DWG 打开功能只读取打开面板前的资源管理器或桌面选区，只把选中的 `.dwg` 路径传给用户选择的 CAD 软件，不修改或保存图纸。
 - “强制关闭 / 保存并关闭 / 保存并重开”三个按钮必须单独成组，且不得与“重载插件”按钮相邻（中间隔其他分组），防止误点关闭图纸；它们只作用于运行中 CAD 的当前活动图纸：优先打开面板前所在的 CAD 窗口，中望 CAD 与 AutoCAD 同时运行且不在 CAD 窗口时不能猜测目标；`CMDACTIVE ≠ 0` 时拒绝；强制关闭按用户要求不弹确认（2026-10-28）；保存失败不得关闭图纸，未命名或只读图纸不得保存。保存必须通过 `SendCommand` 让 CAD 执行原生 `_.QSAVE`（随后 `_.CLOSE`），禁止从面板进程调用 COM `Document.Save()`（中望 CAD 2026 保存大图时会崩溃，2026-10-28 实测）；强制关闭用 COM `Close(False)` 已实测正常。
 - “批量转可信 DWG”只把选区里的 `.dwg` 和文件夹写进临时清单，交给 `AutoCAD2018_lisp\tools\trusted_dwg_batch.py --from-file` 在可见命令行窗口运行；脚本用 `accoreconsole` 导出副本到 `可信DWG\`，不改原文件、不连接运行中的 CAD。转换逻辑只在该脚本维护，面板不复制一份。
-- Windows 11 的 `Shell.Application.SelectedItems` 可能返回旧标签页或旧选中项；DWG 当前选区必须通过资源管理器原生 `Ctrl+C` 读取，并恢复原剪贴板、避免写入 CopyQ 历史。
+- 桌面（Progman/WorkerW）在酷呆桌面运行时（`IsDesktopOrganizerRunning`）必须用 Ctrl+C，未运行时与资源管理器一样直接读 Shell 视图：酷呆桌面（Coodesker）接管桌面图标，系统桌面视图的 `GetSelection`/`SelectedItems` 停留在旧选中项（2026-11-06 实测读成 4 个文件，实际只选 1 个），代价是选中文件时图绳会多挂卡片。
+- 资源管理器窗口选区用 `GetShellViewSelectedFilePaths` 读取：`IShellBrowser::QueryActiveShellView` → `IFolderView2::GetSelection`，完全不碰剪贴板。Win11 多标签共用一个 `CabinetWClass`，必须用 `IOleWindow::GetWindow` 与 `ShellTabWindowClass1`（当前标签）比对；跨进程 `IShellView::GetItemObject` 取 IDataObject 会返回 E_FAIL，不要用。原因：任何剪贴板写入（Ctrl+C 复制文件、写回原剪贴板）都会被图绳 PicRope 等不认排除标记的工具挂成新卡片（2026-11-06 用户反馈）。只有 Shell 方式抛错才回退到 Ctrl+C：回退时不清空剪贴板，用 `GetClipboardSequenceNumber` 判断是否写入，变了才用 `RestoreClipboardWithoutHistory` 写回。
 - 合并 PDF 时用 `Ctrl+C` 取得选中文件后，按文件名自然排序（`StrCmpLogicalW`，与资源管理器“名称”排序一致）再合并，不依赖选择顺序；输出到首个 PDF 所在目录；通过临时 Python 脚本调用 `pypdf`，不修改源文件，覆盖目标前必须明确确认。
 - 合并 PDF 和统计图幅都只通过 `PdfToolCommand()` 调用 `tools\pdf_tools.py`（`merge` / `sizes` 子命令）；分享版在 `packaging\share-panel.ahk` 覆盖该函数改用包内 `pdf-tools.exe`，不要在这两个功能里直接写 `python`。统计图幅：短边定基本图幅、长边按 0.25 倍取加长倍数，列顺序与《图纸打印明细》表头（A0 ~ A4 共 23 列）一致；压缩包只解压到临时目录，不改源文件。改判定规则时用真实图纸 PDF 回归验证。
+- MP4 转 GIF 只通过 `toolsideo_tools.py gif` 转换（ffmpeg 两遍调色板，优先 `imageio-ffmpeg` 自带 ffmpeg），输出同目录同名 `.gif`，先写临时文件再替换，覆盖前必须确认，不改源视频；分享版未包含。
 - Word 转 PDF 支持 `.doc`、`.docx`、`.docm`，通过 Microsoft Word COM 以只读方式导出到源文件同目录；覆盖同名 PDF 前必须明确确认，禁止保存或修改源文档。
 - Excel 转 PDF 支持 `.xls`、`.xlsx`、`.xlsm`、`.xlsb`，通过 Microsoft Excel COM 将整个工作簿（含隐藏工作表）导出为一个同目录同名 PDF；工作簿只读打开、不保存，临时显示的隐藏工作表必须恢复原状态，覆盖目标前必须明确确认。
 - 读取 `CF_HDROP` 时必须在约 1 秒内每 50ms 重试：资源管理器分多次写入剪贴板格式，`ClipWait` 返回时可能还没有 `CF_HDROP`（错误码 1418），剪贴板也可能仍被资源管理器或 CopyQ 占用（`OpenClipboard` 错误码 5）；只读一次会让首次打开面板时文件类按钮变灰（2026-11-04 实测）。
-- 面板打开时只读取一次当前窗口 Ctrl+C 产生的原生 `CF_HDROP` 文件列表并保存选区快照；面板功能统一使用该快照，不在按钮执行时重读剪贴板或回退到可能过期的 Shell `SelectedItems`。Word 转换按路径去重，多文件时先展示清单确认。
+- 面板打开时只读取一次当前窗口选区并保存选区快照；面板功能统一使用该快照，不在按钮执行时重读，也不用可能指向旧标签的 Shell `SelectedItems`。Word 转换按路径去重，多文件时先展示清单确认。
 
 ## AI 改 CAD 文字边界
 

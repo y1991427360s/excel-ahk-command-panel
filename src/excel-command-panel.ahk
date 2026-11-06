@@ -88,7 +88,7 @@ ShowAutomationPanel() {
     if (contextClass = "CabinetWClass" || contextClass = "ExploreWClass"
         || contextClass = "Progman" || contextClass = "WorkerW")
         AutomationSelectedFilePaths := DeduplicateSelectedFilePaths(
-            GetSelectedFilePathsFromClipboard(AutomationContextHwnd)
+            ReadExplorerSelectionSnapshot(AutomationContextHwnd)
         )
     else
         AutomationSelectedFilePaths := GetProjectAtlasSelectedFiles(AutomationContextHwnd)
@@ -247,7 +247,8 @@ ShowAutomationPanel() {
         , ["统计图幅", CountSelectedDrawingSheetSizes, hasFiles, Chr(0xE9D2)])
     ModernPanelRow(ui, ["Word 转 PDF", ConvertSelectedWordFilesToPdf, hasFiles, Chr(0xE8A5)]
         , ["Excel 转 PDF", ConvertSelectedExcelFilesToPdf, hasFiles, Chr(0xE80A)])
-    ModernPanelNote(ui, "PDF 按文件名顺序合并到首个 PDF 所在文件夹；统计图幅可选 PDF、文件夹或 rar/zip/7z。Word、Excel 转为同目录同名 PDF，覆盖前会确认。", 3)
+    ModernPanelRow(ui, ["MP4 转 GIF", ConvertSelectedVideosToGif, hasFiles, Chr(0xE714)])
+    ModernPanelNote(ui, "PDF 按文件名顺序合并到首个 PDF 所在文件夹；统计图幅可选 PDF、文件夹或 rar/zip/7z。Word、Excel、视频转为同目录同名 PDF / GIF，覆盖前会确认。", 3)
 
     ModernPanelBeginPage(ui, "ime", contentX, contentY, contentW)
     ModernPanelSection(ui, "替代默认输入法")
@@ -356,7 +357,7 @@ DescribeAutomationPanelContext() {
         documentCount := 0
         for filePath in AutomationSelectedFilePaths {
             SplitPath(filePath, , , &extension)
-            if RegExMatch(extension, "i)^(pdf|docx?|docm|xlsx?|xlsm|xlsb|rar|zip|7z)$")
+            if RegExMatch(extension, "i)^(pdf|docx?|docm|xlsx?|xlsm|xlsb|rar|zip|7z|mp4|mov|mkv|avi|webm|m4v|wmv|flv)$")
                 documentCount += 1
         }
         SplitPath(AutomationSelectedFilePaths[1], &firstName)
@@ -1241,6 +1242,101 @@ GetSelectedDwgPath() {
     return ""
 }
 
+; 资源管理器窗口直接读 Shell 视图选区，完全不碰剪贴板；桌面或 Shell 方式出错时才用 Ctrl+C 读 CF_HDROP。
+; 回退方式会改动剪贴板，图绳、Win+V 等剪贴板记录工具会多记一条（2026-11-06 用户反馈）。
+ReadExplorerSelectionSnapshot(hwnd) {
+    ; 酷呆桌面（Coodesker）运行时接管桌面图标，系统桌面视图的选中项是旧的，只有 Ctrl+C 能拿到真实选区（2026-11-06 实测）
+    if (IsDesktopWindow(hwnd) && IsDesktopOrganizerRunning()) {
+        LogPanelDiagnostic("桌面整理软件运行中，用剪贴板读选区")
+        return GetSelectedFilePathsFromClipboard(hwnd)
+    }
+    try {
+        selected := GetShellViewSelectedFilePaths(hwnd)
+        LogPanelDiagnostic("Shell视图选区", "fileCount=" . selected.Length
+            . (selected.Length ? "`r`n" . JoinLines(selected) : "`r`n未选中文件"))
+        return selected
+    } catch as err {
+        LogPanelDiagnostic("Shell视图选区失败，回退剪贴板", err.Message)
+        return GetSelectedFilePathsFromClipboard(hwnd)
+    }
+}
+
+IsDesktopOrganizerRunning() {
+    for name in ["coodesker-x64.exe", "coodesker.exe"]
+        if ProcessExist(name)
+            return true
+    return false
+}
+
+IsDesktopWindow(hwnd) {
+    contextClass := ""
+    try contextClass := WinGetClass("ahk_id " . hwnd)
+    return contextClass = "Progman" || contextClass = "WorkerW"
+}
+
+; 直接读资源管理器/桌面当前视图的选中项，不经过剪贴板，剪贴板记录工具（图绳、Win+V 等）不会收到任何变化。
+; 失败时抛异常，由调用方决定是否回退；视图里没有选中项时返回空数组。
+GetShellViewSelectedFilePaths(hwnd) {
+    static SID_STopLevelBrowser := "{4C96BE40-915C-11CF-99D3-00AA004AE837}"
+    static IID_IShellBrowser := "{000214E2-0000-0000-C000-000000000046}"
+    contextClass := WinGetClass("ahk_id " . hwnd)
+    windows := ComObject("Shell.Application").Windows()
+    browser := ""
+    if (contextClass = "Progman" || contextClass = "WorkerW") {
+        hwndOut := Buffer(4, 0)
+        desktop := windows.FindWindowSW(0, 0, 8, ComValue(0x4003, hwndOut.Ptr), 1)  ; SWC_DESKTOP, SWFO_NEEDDISPATCH
+        browser := ComObjQuery(desktop, SID_STopLevelBrowser, IID_IShellBrowser)
+    } else {
+        ; Win11 资源管理器多标签共用一个顶层窗口；ShellTabWindowClass1 是当前显示的标签
+        activeTab := 0
+        try activeTab := ControlGetHwnd("ShellTabWindowClass1", "ahk_id " . hwnd)
+        for window in windows {
+            windowHwnd := 0
+            try windowHwnd := window.HWND
+            if (windowHwnd != hwnd)
+                continue
+            candidate := ComObjQuery(window, SID_STopLevelBrowser, IID_IShellBrowser)
+            if activeTab {
+                ComCall(3, candidate, "Ptr*", &tabHwnd := 0)  ; IOleWindow::GetWindow
+                if (tabHwnd != activeTab)
+                    continue
+            }
+            browser := candidate
+            break
+        }
+    }
+    if !browser
+        throw Error("未找到窗口对应的 Shell 视图；class=" . contextClass)
+
+    ComCall(15, browser, "Ptr*", &view := 0)  ; IShellBrowser::QueryActiveShellView
+    selection := 0
+    try {
+        ; IFolderView2::GetSelection 直接读视图当前选中项；跨进程取 IDataObject 会被资源管理器拒绝（E_FAIL）
+        folderView := ComObjQuery(view, "{1AF3A467-214F-4298-908E-06B03E0B39F9}")
+        if (ComCall(32, folderView, "Int", 0, "Ptr*", &selection, "Int") < 0 || !selection)
+            return []  ; 没有选中项
+        selected := []
+        ComCall(7, selection, "UInt*", &count := 0)  ; IShellItemArray::GetCount
+        Loop count {
+            ComCall(8, selection, "UInt", A_Index - 1, "Ptr*", &item := 0)  ; GetItemAt
+            try {
+                ; IShellItem::GetDisplayName(SIGDN_FILESYSPATH)；库、此电脑等虚拟项没有文件路径，跳过
+                if (ComCall(5, item, "UInt", 0x80058000, "Ptr*", &pathPtr := 0, "Int") >= 0 && pathPtr) {
+                    filePath := StrGet(pathPtr, "UTF-16")
+                    DllCall("ole32\CoTaskMemFree", "Ptr", pathPtr)
+                    if (filePath != "" && FileExist(filePath))
+                        selected.Push(filePath)
+                }
+            } finally ObjRelease(item)
+        }
+        return selected
+    } finally {
+        if selection
+            ObjRelease(selection)
+        ObjRelease(view)
+    }
+}
+
 GetSelectedFilePathsFromClipboard(hwnd) {
     global CopyQExe
 
@@ -1266,16 +1362,20 @@ GetSelectedFilePathsFromClipboard(hwnd) {
             copyQDisabled := PauseCopyQForSelection(CopyQExe)
         }
 
-        A_Clipboard := ""
+        ; 不先清空剪贴板：没选文件时 Ctrl+C 什么也不写，剪贴板保持原样，事后也就不用写回，
+        ; 剪贴板历史 / 输入法剪贴板等记录工具不会再多记一条（2026-11-06 用户反馈）。
+        clipSequence := DllCall("GetClipboardSequenceNumber", "UInt")
         Send("^c")
-        clipReady := ClipWait(1, 1)
+        clipReady := WaitClipboardSequenceChange(clipSequence, 1000)
         if clipReady
             selected := ReadClipboardFileDropPathsWithRetry(1000)
         LogPanelDiagnostic("读取剪贴板选区结束", "clipReady=" . clipReady . "; fileCount=" . selected.Length
             . (selected.Length ? "`r`n" . JoinLines(selected) : "`r`nCF_HDROP为空或剪贴板等待超时"))
     } finally {
+        clipChanged := IsSet(clipSequence) && DllCall("GetClipboardSequenceNumber", "UInt") != clipSequence
         try {
-            A_Clipboard := savedClipboard
+            if clipChanged
+                RestoreClipboardWithoutHistory(savedClipboard)
         } finally {
             if copyQDisabled {
                 try ResumeCopyQAfterSelection(CopyQExe, copyQDisabled)
@@ -1285,10 +1385,42 @@ GetSelectedFilePathsFromClipboard(hwnd) {
                 }
             }
         }
-        LogPanelDiagnostic("选区读取清理", "clipboardRestored=1; copyQReenabled=" . copyQDisabled)
+        LogPanelDiagnostic("选区读取清理", "clipboardRestored=" . clipChanged . "; copyQReenabled=" . copyQDisabled)
     }
 
     return selected
+}
+
+WaitClipboardSequenceChange(sequence, timeoutMs) {
+    deadline := A_TickCount + timeoutMs
+    while (DllCall("GetClipboardSequenceNumber", "UInt") = sequence) {
+        if (A_TickCount > deadline)
+            return false
+        Sleep(20)
+    }
+    return true
+}
+
+; 写回原剪贴板时附带 Windows 约定的排除标记。否则开着 Win+V 剪贴板历史时，
+; 每次打开面板都会把之前复制的图片/文字再记一条（2026-11-06 用户反馈）。
+; ClipboardAll 数据格式：若干段 [UInt 格式][UInt 字节数][数据]，最后以 UInt 0 结束。
+RestoreClipboardWithoutHistory(saved) {
+    size := saved.Size
+    if (size < 8 || NumGet(saved, size - 4, "UInt") != 0) {
+        A_Clipboard := saved
+        return
+    }
+    marks := ["ExcludeClipboardContentFromMonitorProcessing", "CanIncludeInClipboardHistory", "CanUploadToCloudClipboard"]
+    data := Buffer(size - 4 + marks.Length * 12 + 4, 0)
+    DllCall("RtlMoveMemory", "Ptr", data, "Ptr", saved, "UPtr", size - 4)
+    offset := size - 4
+    for name in marks {
+        ; 后两个格式取 DWORD 0 表示“不进历史 / 不上传云剪贴板”
+        NumPut("UInt", DllCall("RegisterClipboardFormat", "Str", name, "UInt"), "UInt", 4, "UInt", 0, data, offset)
+        offset += 12
+    }
+    NumPut("UInt", 0, data, offset)
+    A_Clipboard := ClipboardAll(data)
 }
 
 ; 资源管理器分多次写入剪贴板格式，ClipWait 返回时 CF_HDROP 可能还没写好，
@@ -2946,17 +3078,7 @@ CountSelectedDrawingSheetSizes() {
             MsgBox(report, title, "Icon!")
             return
         }
-        ; 明细过长时只在对话框里显示前面部分，完整报告可复制
-        shown := StrLen(report) > 2400 ? SubStr(report, 1, 2400) . "`n…（明细较多，已截断）" : report
-        choice := MsgBox(shown . "`n`n是：复制为打印明细表一行（A0 ~ A4 共 23 列，粘贴到“A0”列）`n否：复制完整统计文字"
-            , title, "YesNoCancel Iconi Default1")
-        if (choice = "Yes") {
-            A_Clipboard := row
-            TrayTip("已复制 23 列图幅数量，可直接粘贴到打印明细表的 A0 列。", title, 1)
-        } else if (choice = "No") {
-            A_Clipboard := report
-            TrayTip("已复制完整统计文字。", title, 1)
-        }
+        ShowSheetSizeReport(title, report, row)
     } catch as err {
         ToolTip()
         MsgBox("统计图幅失败：`n`n" . err.Message, title, "Icon!")
@@ -2965,6 +3087,131 @@ CountSelectedDrawingSheetSizes() {
             if FileExist(tempPath)
                 try FileDelete(tempPath)
     }
+}
+
+; 视频转 GIF：选中的视频逐个转为同目录同名 .gif，经 toolsideo_tools.py 调 ffmpeg 两遍调色板，源视频不改。
+ConvertSelectedVideosToGif() {
+    title := "MP4 转 GIF"
+    videos := []
+    seen := Map()
+    for _, path in GetSelectedFilePaths() {
+        SplitPath(path, , , &extension)
+        if (!DirExist(path) && RegExMatch(extension, "i)^(mp4|mov|mkv|avi|webm|m4v|wmv|flv)$") && !seen.Has(StrLower(path))) {
+            seen[StrLower(path)] := true
+            videos.Push(path)
+        }
+    }
+    if (videos.Length = 0) {
+        MsgBox("请先在资源管理器或桌面选中视频文件（mp4、mov、mkv、avi、webm 等），再打开面板转换。", title, "Icon!")
+        return
+    }
+    SortPathsByFileNameLogical(videos)
+
+    script := A_ScriptDir . "\..\tools\video_tools.py"
+    if !FileExist(script) {
+        MsgBox("找不到视频工具脚本：`n" . script, title, "Icon!")
+        return
+    }
+
+    input := InputBox("将转换 " . videos.Length . " 个视频：`n" . JoinLines(videos, 5)
+        . "`n`n输入“宽度, 帧率”。宽度 0 为原尺寸（不会放大），帧率越低文件越小。", title, "w520 h" . (190 + Min(videos.Length, 5) * 16), "800, 12")
+    if (input.Result != "OK")
+        return
+    if !RegExMatch(input.Value, "^\s*(\d+)\s*[,，\s]\s*(\d+)\s*$", &m) || m[2] < 1 || m[2] > 50 {
+        MsgBox("格式不对，请输入例如 800, 12（帧率 1 ~ 50）。", title, "Icon!")
+        return
+    }
+    width := Integer(m[1]), fps := Integer(m[2])
+
+    existing := []
+    for _, path in videos {
+        SplitPath(path, , &dir, , &nameNoExt)
+        if FileExist(dir . "\" . nameNoExt . ".gif")
+            existing.Push(dir . "\" . nameNoExt . ".gif")
+    }
+    if (existing.Length > 0
+        && MsgBox("以下同名 GIF 已存在，转换后会覆盖：`n`n" . JoinLines(existing, 8) . "`n`n继续吗？", title, "YesNo Icon? Default2") != "Yes")
+        return
+
+    logPath := A_Temp . "ideo-gif-" . A_NowUTC . "-" . Random(100000, 999999) . ".txt"
+    commandLine := 'python "' . script . '" gif --width ' . width . ' --fps ' . fps . ' --log "' . logPath . '"'
+    for _, path in videos
+        commandLine .= ' "' . path . '"'
+
+    ToolTip("正在把 " . videos.Length . " 个视频转为 GIF，长视频需要一些时间，请稍候…")
+    try {
+        exitCode := RunWait(commandLine, , "Hide")
+        ToolTip()
+        report := FileExist(logPath) ? FileRead(logPath, "UTF-8") : ""
+        if (exitCode != 0 || report = "") {
+            MsgBox((report != "" ? report : "转换失败，没有得到结果。") . "`n`n退出代码：" . exitCode, title, "Icon!")
+            return
+        }
+        TrayTip(videos.Length = 1 ? report : "已转换 " . videos.Length . " 个视频为 GIF。", title, 1)
+    } catch as err {
+        ToolTip()
+        MsgBox("视频转 GIF 失败：`n`n" . err.Message, title, "Icon!")
+    } finally {
+        if FileExist(logPath)
+            try FileDelete(logPath)
+    }
+}
+
+; 统计图幅结果窗口：汇总在上，各文件明细放进可上下滚动的列表（不截断），按钮复制明细表一行或完整文字。
+ShowSheetSizeReport(title, report, row) {
+    summaryLines := [], details := [], tailLines := []
+    section := "summary"
+    for _, line in StrSplit(StrReplace(report, "`r"), "`n") {
+        if (line = "各文件明细：") {
+            section := "detail"
+            continue
+        }
+        if (section = "detail" && RegExMatch(line, "^\s+(.+)（(\d+) 张）：(.*)$", &m)) {
+            details.Push([m[1], m[2], m[3]])
+            continue
+        }
+        if (section = "detail" && Trim(line) != "")
+            section := "tail"
+        if (section = "summary")
+            summaryLines.Push(line)
+        else if (section = "tail")
+            tailLines.Push(line)
+    }
+
+    dlg := Gui("+AlwaysOnTop -MinimizeBox", title)
+    dlg.BackColor := "FFFFFF"
+    dlg.MarginX := 16, dlg.MarginY := 14
+    dlg.SetFont("s10 c1F2329", "Microsoft YaHei UI")
+    dlg.AddText("w720", Trim(JoinLines(summaryLines), "`n"))
+    if (details.Length > 0) {
+        dlg.AddText("w720 y+10", "各文件明细（共 " . details.Length . " 项，列表可上下滚动）：")
+        lv := dlg.AddListView("w720 r16 -Multi NoSort NoSortHdr Grid", ["序号", "文件名", "张数", "图幅"])
+        for index, item in details
+            lv.Add(, index, item[1], item[2], item[3])
+        lv.ModifyCol(1, "52 Integer Center")
+        lv.ModifyCol(2, 430)
+        lv.ModifyCol(3, "56 Integer Center")
+        lv.ModifyCol(4, "AutoHdr")
+    }
+    if (tailLines.Length > 0) {
+        dlg.SetFont("s10 cD32F2F")
+        dlg.AddText("w720 y+8", Trim(JoinLines(tailLines), "`n"))
+    }
+    dlg.SetFont("s10 c6B7280")
+    dlg.AddText("w720 y+8", "“复制明细表一行”：A0 ~ A4 共 23 列，粘贴到打印明细表的“A0”列。")
+    dlg.SetFont("s10 c1F2329")
+    rowBtn := dlg.AddButton("x288 w170 Default", "复制明细表一行")
+    textBtn := dlg.AddButton("x+8 w150", "复制完整统计文字")
+    closeBtn := dlg.AddButton("x+8 w100", "关闭")
+    rowBtn.OnEvent("Click", (*) => (A_Clipboard := row, dlg.Destroy()
+        , TrayTip("已复制 23 列图幅数量，可直接粘贴到打印明细表的 A0 列。", title, 1)))
+    textBtn.OnEvent("Click", (*) => (A_Clipboard := report, dlg.Destroy(), TrayTip("已复制完整统计文字。", title, 1)))
+    closeBtn.OnEvent("Click", (*) => dlg.Destroy())
+    dlg.OnEvent("Close", (*) => dlg.Destroy())
+    dlg.OnEvent("Escape", (*) => dlg.Destroy())
+    dlg.Show()
+    rowBtn.Focus()
+    WinWaitClose(dlg.Hwnd)
 }
 
 SortPathsByFileNameLogical(paths) {
