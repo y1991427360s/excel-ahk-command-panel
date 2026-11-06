@@ -249,7 +249,7 @@ ShowAutomationPanel() {
         , ["Excel 转 PDF", ConvertSelectedExcelFilesToPdf, hasFiles, Chr(0xE80A)])
     ModernPanelRow(ui, ["MP4 转 GIF", ConvertSelectedVideosToGif, hasFiles, Chr(0xE714)]
         , ["压缩视频", CompressSelectedVideos, hasFiles, Chr(0xE73F)])
-    ModernPanelNote(ui, "PDF 按文件名顺序合并到首个 PDF 所在文件夹；统计图幅可选 PDF、文件夹或 rar/zip/7z。Word、Excel、视频转为同目录同名 PDF / GIF，压缩视频输出“原名_压缩.mp4”，覆盖前会确认。", 3)
+    ModernPanelNote(ui, "PDF 按文件名顺序合并到首个 PDF 所在文件夹；统计图幅可选 PDF、文件夹或 rar/zip/7z。Word、Excel、视频转为同目录同名 PDF / GIF，压缩视频放进同目录新建的“压缩视频”文件夹，覆盖前会确认。", 3)
 
     ModernPanelBeginPage(ui, "ime", contentX, contentY, contentW)
     ModernPanelSection(ui, "替代默认输入法")
@@ -3104,10 +3104,10 @@ ConvertSelectedVideosToGif() {
         MsgBox("格式不对，请输入例如 0, 12 或 800, 12（帧率 1 ~ 50）。", title, "Icon!")
         return
     }
-    RunVideoTool(title, videos, "gif --width " . Integer(m[1]) . " --fps " . Integer(m[2]), ".gif", "转为 GIF")
+    RunVideoTool(title, videos, "gif --width " . Integer(m[1]) . " --fps " . Integer(m[2]), "{name}.gif", "转为 GIF")
 }
 
-; 压缩视频：x264 按 CRF 画质压缩（与小丸工具箱同一思路），输出同目录“原名_压缩.mp4”，源视频不改。
+; 压缩视频：x264 按 CRF 画质压缩（与小丸工具箱同一思路），输出到同目录下“压缩视频”文件夹（文件名不变），源视频不改。
 CompressSelectedVideos() {
     title := "压缩视频"
     videos := GetSelectedVideoPaths(title)
@@ -3122,7 +3122,7 @@ CompressSelectedVideos() {
         MsgBox("格式不对，请输入例如 24, 0 或 28, 1280（CRF 16 ~ 40）。", title, "Icon!")
         return
     }
-    RunVideoTool(title, videos, "compress --crf " . Integer(m[1]) . " --width " . Integer(m[2]), "_压缩.mp4", "压缩")
+    RunVideoTool(title, videos, "compress --crf " . Integer(m[1]) . " --width " . Integer(m[2]), "压缩视频\{name}.mp4", "压缩")
 }
 
 ; 取选区里的视频文件（去重、按文件名自然排序）；没有时提示并返回空数组。
@@ -3142,7 +3142,8 @@ GetSelectedVideoPaths(title) {
 }
 
 ; 运行 tools\video_tools.py：先确认会被覆盖的输出，执行期间显示提示，结果来自脚本写的日志。
-RunVideoTool(title, videos, toolArgs, outputSuffix, actionName) {
+; outputPattern 是相对源文件夹的输出路径，{name} 代表不带扩展名的源文件名，须与 video_tools.py 一致。
+RunVideoTool(title, videos, toolArgs, outputPattern, actionName) {
     script := A_ScriptDir . "\..\tools\video_tools.py"
     if !FileExist(script) {
         MsgBox("找不到视频工具脚本：`n" . script, title, "Icon!")
@@ -3151,8 +3152,9 @@ RunVideoTool(title, videos, toolArgs, outputSuffix, actionName) {
     existing := []
     for _, path in videos {
         SplitPath(path, , &dir, , &nameNoExt)
-        if FileExist(dir . "\" . nameNoExt . outputSuffix)
-            existing.Push(dir . "\" . nameNoExt . outputSuffix)
+        outputPath := dir . "\" . StrReplace(outputPattern, "{name}", nameNoExt)
+        if FileExist(outputPath)
+            existing.Push(outputPath)
     }
     if (existing.Length > 0
         && MsgBox("以下文件已存在，处理后会覆盖：`n`n" . JoinLines(existing, 8) . "`n`n继续吗？", title, "YesNo Icon? Default2") != "Yes")

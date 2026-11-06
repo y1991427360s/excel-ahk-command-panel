@@ -4,7 +4,7 @@ ffmpeg 优先用 imageio-ffmpeg 自带的那份，找不到再用 PATH 里的 ff
 都输出到源文件同目录；先写临时文件，成功后替换，源视频不改。
 
 gif：一条滤镜链做两遍调色板（palettegen + paletteuse），比直接转 GIF 色彩好、体积小，输出同名 .gif。
-compress：x264 按 CRF 画质压缩（与小丸工具箱同一思路），音频转 AAC，输出“原名_压缩.mp4”；
+compress：x264 按 CRF 画质压缩（与小丸工具箱同一思路），音频转 AAC，输出到源文件夹下“压缩视频\原名.mp4”；
           压缩后不比原文件小时不保留结果。
 
 用法：
@@ -19,6 +19,9 @@ import subprocess
 import sys
 import time
 import traceback
+
+
+COMPRESS_FOLDER = "压缩视频"
 
 
 class Skipped(Exception):
@@ -94,7 +97,10 @@ def to_gif(ffmpeg, source, args):
 
 
 def compress(ffmpeg, source, args):
-    output = os.path.splitext(source)[0] + "_压缩.mp4"
+    # 放进源文件夹下的“压缩视频”子文件夹，文件名不变（扩展名统一为 .mp4）
+    folder = os.path.join(os.path.dirname(source), COMPRESS_FOLDER)
+    os.makedirs(folder, exist_ok=True)
+    output = os.path.join(folder, os.path.splitext(os.path.basename(source))[0] + ".mp4")
     options = ["-map", "0:v:0", "-map", "0:a?", "-c:v", "libx264", "-preset", args.preset,
                "-crf", str(args.crf), "-pix_fmt", "yuv420p"]
     if args.width > 0:
@@ -109,7 +115,7 @@ def compress(ffmpeg, source, args):
         os.remove(temp)
         raise Skipped(f"压缩后 {size_text(after)} 不比原文件 {size_text(before)} 小，未保留（原视频已足够小，可调大 CRF 或缩小宽度）")
     replace_output(temp, output)
-    return (f"{os.path.basename(output)}（{size_text(before)} → {size_text(after)}，"
+    return (f"{COMPRESS_FOLDER}\\{os.path.basename(output)}（{size_text(before)} → {size_text(after)}，"
             f"减小 {100 - after * 100 // before}%）")
 
 
