@@ -2,6 +2,7 @@
 #SingleInstance Ignore
 global SetupLog := EnvGet("LOCALAPPDATA") . "\SpreadsheetToolsShare-install.log"
 global SetupQuiet := false
+global ShareShortcutName := "自动化工具面板（分享版）.lnk"
 try {
     mode := A_Args.Length ? A_Args[1] : "install"
     installRoot := EnvGet("LOCALAPPDATA") . "\SpreadsheetToolsShare"
@@ -42,13 +43,13 @@ try {
     if !SetupQuiet
         MsgBox(mode = "install"
             ? "安装成功！`n`n在 Excel / WPS 里选中单元格，或在资源管理器里选中文件，再按 Ctrl+Shift+E。`n`n已创建桌面入口和开机启动项。"
-            : "卸载完成。", "表格工具面板", "Iconi")
+            : "卸载完成。", "自动化工具面板", "Iconi")
     ExitApp(0)
 } catch as err {
     details := err.Message . "`n位置：" . err.What . "`n行号：" . err.Line
     try LogSetup("失败：" . details)
     if !SetupQuiet
-        MsgBox("安装或卸载失败：`n`n" . details . "`n`n日志：" . SetupLog, "表格工具面板", "Iconx")
+        MsgBox("安装或卸载失败：`n`n" . details . "`n`n日志：" . SetupLog, "自动化工具面板", "Iconx")
     try FileAppend(details . "`n", "**", "UTF-8")
     ExitApp(1)
 }
@@ -86,8 +87,10 @@ InstallShare(root, noShortcuts, noLaunch, shortcutRoot) {
     if !noShortcuts {
         for directory in SetupShortcutDirectories(shortcutRoot) {
             DirCreate(directory)
-            FileCreateShortcut(root . "\AutoHotkey64.exe", directory . "\表格工具面板（分享版）.lnk",
-                root, Chr(34) . root . "\spreadsheet-panel.ahk" . Chr(34), "表格工具面板：Ctrl+Shift+E")
+            ; 旧版叫“表格工具面板”，升级时删掉旧名快捷方式，避免桌面和开机启动里出现两个
+            RemoveShareShortcuts(directory, root, ["表格工具面板（分享版）.lnk"])
+            FileCreateShortcut(root . "\AutoHotkey64.exe", directory . "\" . ShareShortcutName,
+                root, Chr(34) . root . "\spreadsheet-panel.ahk" . Chr(34), "自动化工具面板：Ctrl+Shift+E")
         }
     }
     if !noLaunch {
@@ -101,16 +104,10 @@ InstallShare(root, noShortcuts, noLaunch, shortcutRoot) {
 UninstallShare(root, noShortcuts, shortcutRoot) {
     StopInstalledShare(root)
     if !noShortcuts {
-        for directory in SetupShortcutDirectories(shortcutRoot) {
-            link := directory . "\表格工具面板（分享版）.lnk"
-            if FileExist(link) {
-                FileGetShortcut(link, &target)
-                if StrLower(target) = StrLower(root . "\AutoHotkey64.exe")
-                    FileDelete(link)
-            }
-        }
+        for directory in SetupShortcutDirectories(shortcutRoot)
+            RemoveShareShortcuts(directory, root, [ShareShortcutName, "表格工具面板（分享版）.lnk"])
     }
-    for name in ["AutoHotkey64.exe", "spreadsheet-panel.ahk", "AutoHotkey-license.txt", "AutoHotkey-source.txt", "AutoHotkey-source.zip", "使用说明.txt"] {
+    for name in ["AutoHotkey64.exe", "spreadsheet-panel.ahk", "pdf-tools.exe", "AutoHotkey-license.txt", "AutoHotkey-source.txt", "AutoHotkey-source.zip", "使用说明.txt"] {
         path := root . "\" . name
         if FileExist(path)
             FileDelete(path)
@@ -134,6 +131,18 @@ StopInstalledShare(root) {
             ProcessWaitClose(pid, 5)
             if ProcessExist(pid)
                 throw Error("旧版面板未能退出。请从托盘退出旧版后重试。")
+        }
+    }
+}
+
+; 只删除指向本安装目录 AutoHotkey64.exe 的快捷方式，不动同名的其他快捷方式
+RemoveShareShortcuts(directory, root, names) {
+    for name in names {
+        link := directory . "\" . name
+        if FileExist(link) {
+            FileGetShortcut(link, &target)
+            if StrLower(target) = StrLower(root . "\AutoHotkey64.exe")
+                FileDelete(link)
         }
     }
 }

@@ -1,10 +1,14 @@
-"""统计 PDF 图纸图幅（面板“统计图幅”按钮调用）。
+"""面板的 PDF 工具：统计图幅（sizes）和合并 PDF（merge）。
 
-输入可以是 PDF、文件夹或压缩包（rar / zip / 7z），逐页读取页面尺寸：
+主面板用系统 python 运行本脚本；分享版把它用 PyInstaller 打成 pdf-tools.exe，朋友电脑不需要装 Python。
+
+统计图幅：输入可以是 PDF、文件夹或压缩包（rar / zip / 7z），逐页读取页面尺寸：
 短边决定基本图幅（A4/A3/A2/A1/A0），长边 ÷ 基本图幅长边 得到加长倍数，按 0.25 取整，
 例如 297×841 → A3*2、594×1051 → A1*1.25。列顺序与《图纸打印明细》表头一致。
 
-用法：python drawing_sheet_sizes.py --report 报告.txt --row 表格行.txt 路径1 [路径2 ...]
+用法：
+  pdf_tools.py sizes --report 报告.txt --row 表格行.txt 路径1 [路径2 ...]
+  pdf_tools.py merge 输出.pdf 输入1.pdf 输入2.pdf ...   （先写临时文件，成功后替换输出）
 """
 import argparse
 import io
@@ -16,7 +20,7 @@ import tempfile
 import zipfile
 from collections import Counter, OrderedDict
 
-from pypdf import PdfReader
+from pypdf import PdfReader, PdfWriter
 
 MM_PER_PT = 25.4 / 72
 
@@ -169,12 +173,7 @@ def format_counter(counter):
     return "、".join(f"{name} ×{counter[name]}" for name in sorted(counter, key=sort_key))
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--report", required=True)
-    parser.add_argument("--row", required=True)
-    parser.add_argument("paths", nargs="+")
-    args = parser.parse_args()
+def run_sizes(args):
 
     results, errors, temp_dirs = [], [], []
     try:
@@ -218,6 +217,39 @@ def main():
     with open(args.row, "w", encoding="utf-8") as handle:
         handle.write("\t".join(str(total[name]) if total[name] else "" for name in TABLE_COLUMNS))
     return 0 if results else 2
+
+
+def run_merge(args):
+    output = os.path.abspath(args.output)
+    temp_output = f"{output}.tmp-{os.getpid()}"
+    writer = PdfWriter()
+    try:
+        for path in args.inputs:
+            writer.append(path)
+        with open(temp_output, "wb") as handle:
+            writer.write(handle)
+    except Exception:
+        if os.path.exists(temp_output):
+            os.remove(temp_output)
+        raise
+    finally:
+        writer.close()
+    os.replace(temp_output, output)
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    commands = parser.add_subparsers(dest="command", required=True)
+    sizes = commands.add_parser("sizes")
+    sizes.add_argument("--report", required=True)
+    sizes.add_argument("--row", required=True)
+    sizes.add_argument("paths", nargs="+")
+    merge = commands.add_parser("merge")
+    merge.add_argument("output")
+    merge.add_argument("inputs", nargs="+")
+    args = parser.parse_args()
+    return run_sizes(args) if args.command == "sizes" else run_merge(args)
 
 
 if __name__ == "__main__":

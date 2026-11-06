@@ -201,7 +201,7 @@ PDF 合并、统计图幅、Word 转 PDF 和 Excel 转 PDF 位于“文件处理
 
 “合并选中的 PDF”要求至少选中两个 PDF。合并前按文件名自然排序（与资源管理器“名称”排序一致，`ML2` 排在 `ML10` 前），与点选先后无关，执行前的确认框会带序号列出全部待合并文件（列表可上下滚动），输出到第一份 PDF 所在文件夹；文件名可以输入或直接使用默认的“合并结果.pdf”。若目标文件已存在，会先询问是否覆盖；确认后先写入临时文件，成功后再替换目标。源 PDF 不会修改。此功能调用系统 `python`，并要求该 Python 环境安装 `pypdf`。
 
-“统计图幅”统计选中的 PDF、文件夹（含子文件夹）或 rar/zip/7z 压缩包里每一页的图幅，不修改源文件。规则：页面短边决定基本图幅（A4 210、A3 297、A2 420、A1 594、A0 841 mm，允许 ±8 mm 打印余量），长边 ÷ 基本图幅长边得到加长倍数并按 0.25 取整，如 297×841 为 A3*2、420×891 为 A2*1.5、594×1051 为 A1*1.25；对不上的记为“非标 宽×长mm”。结果对话框列出总数、各图幅张数和每个 PDF 的明细；点“是”把 A0 ~ A4 共 23 列数量（列顺序同《图纸打印明细》表头 A0、A0*1.25 … A3*2.75、A4，零值留空）用制表符复制到剪贴板，粘贴到明细表的 A0 列即可；点“否”复制完整统计文字。压缩包用 WinRAR 的 `UnRAR.exe`、7-Zip 或系统 `tar.exe` 解压到临时目录，统计后删除；zip 直接在内存中读取。脚本为 `tools\drawing_sheet_sizes.py`，需要系统 `python` 和 `pypdf`。
+“统计图幅”统计选中的 PDF、文件夹（含子文件夹）或 rar/zip/7z 压缩包里每一页的图幅，不修改源文件。规则：页面短边决定基本图幅（A4 210、A3 297、A2 420、A1 594、A0 841 mm，允许 ±8 mm 打印余量），长边 ÷ 基本图幅长边得到加长倍数并按 0.25 取整，如 297×841 为 A3*2、420×891 为 A2*1.5、594×1051 为 A1*1.25；对不上的记为“非标 宽×长mm”。结果对话框列出总数、各图幅张数和每个 PDF 的明细；点“是”把 A0 ~ A4 共 23 列数量（列顺序同《图纸打印明细》表头 A0、A0*1.25 … A3*2.75、A4，零值留空）用制表符复制到剪贴板，粘贴到明细表的 A0 列即可；点“否”复制完整统计文字。压缩包用 WinRAR 的 `UnRAR.exe`、7-Zip 或系统 `tar.exe` 解压到临时目录，统计后删除；zip 直接在内存中读取。主面板通过系统 `python` 运行 `tools\pdf_tools.py sizes`（合并为 `merge` 子命令），需要 `pypdf`；分享版用打包好的 `pdf-tools.exe`。
 
 “Word 转 PDF”支持选中的 `.doc`、`.docx` 和 `.docm` 文档，可一次转换多个文件。检测到多个不同文档时会先展示文件清单供确认。PDF 输出到各 Word 文档所在文件夹，并沿用原文件名；若同名 PDF 已存在，会先询问是否覆盖。此功能通过 Microsoft Word 导出 PDF，要求本机安装 Microsoft Word，源文档以只读方式打开且不会被修改。选区和转换诊断日志保存在 `%LOCALAPPDATA%\AutoHotkeyPanel\selection-debug.log`。
 
@@ -237,9 +237,9 @@ Set-Location E:\366256\vibecoding\AutoHotkey\projects\excel-ahk-command-panel
 
 ### 分享给其他电脑（通用功能完整版）
 
-运行 `python packaging\build-share.py --output <输出目录>`，生成自带 AutoHotkey v2 64 位运行环境的 ZIP 分享包。构建时会下载与本机运行环境版本对应的 AutoHotkey 开源源码包，供随包分发；朋友安装时无需联网或另装 AutoHotkey。
+运行 `python packaging\build-share.py`，生成“自动化工具面板”ZIP 分享包（2026-11-06 前叫“表格工具面板”），自带 AutoHotkey v2 64 位运行环境。默认输出到桌面，且**桌面只保留最新一个分享包**：新包构建成功后，旧的 `自动化工具面板-*.zip` 和改名前的 `表格工具面板-*.zip` 会移到回收站；`--output <目录>` 改输出位置，`--keep-old` 不清理旧包（试构建用）。中间文件放在临时目录，桌面上不留解压文件夹。构建时会下载与本机运行环境版本对应的 AutoHotkey 开源源码包，供随包分发；并用 PyInstaller 把 `tools\pdf_tools.py` 打成 `pdf-tools.exe`（排除 Pillow、numpy、cryptography 等用不到的库，约 14MB）。朋友安装时无需联网，也不用另装 AutoHotkey 或 Python。
 
-分享版从现有生产源码提取表格按钮（`@@SPREADSHEET_BUTTONS` 区块）及依赖函数，2026-11-03 起与主面板同样带左侧边栏，包含表格工具、CAD 图纸（DWG 用系统默认程序或“打开方式”打开，中望 CAD / AutoCAD 当前图纸强制关闭、保存并关闭、保存并重开）、批量改名、Word/Excel 转 PDF 和默认输入法页面。依赖本机环境的功能不打包：LISP 重载与插件命令、电缆总览、AI 改 CAD 文字、合并 PDF（需 Python）、CopyQ 防护和项目总览选区；`build-share.py` 会对这些名称和个人路径做禁用词检查，并跳过 `*-main.ahk` 独立入口。分享版界面和读选区逻辑在 `packaging\share-panel.ahk`，不携带个人路径或全局记忆。朋友解压后双击 `双击安装.cmd`，自动安装到 `%LOCALAPPDATA%\SpreadsheetToolsShare`，创建桌面入口和开机启动项，使用 `Ctrl+Shift+E`。仅支持 64 位 Windows，需自行安装 Excel 或 WPS 桌面版；卸载时双击包中的 `卸载.cmd`。
+分享版从现有生产源码提取表格按钮（`@@SPREADSHEET_BUTTONS` 区块）及依赖函数，2026-11-03 起与主面板同样带左侧边栏，包含表格工具、CAD 图纸（DWG 用系统默认程序或“打开方式”打开，中望 CAD / AutoCAD 当前图纸强制关闭、保存并关闭、保存并重开）、批量改名、文件处理（合并 PDF、统计图幅、Word/Excel 转 PDF）和默认输入法页面。依赖本机环境的功能不打包：LISP 重载与插件命令、电缆总览、AI 改 CAD 文字、批量转可信 DWG、CopyQ 防护和项目总览选区；`build-share.py` 会对这些名称和个人路径做禁用词检查，并跳过 `*-main.ahk` 独立入口。分享版界面和读选区逻辑在 `packaging\share-panel.ahk`，不携带个人路径或全局记忆。`share-panel.ahk` 里定义的函数会覆盖生产源码里的同名函数：合并 PDF 和统计图幅都只经由 `PdfToolCommand()` 调用 PDF 工具，主面板版本返回系统 `python` + `tools\pdf_tools.py`，分享版版本返回包内 `pdf-tools.exe`。安装会把旧名“表格工具面板（分享版）”的桌面和开机启动快捷方式换成“自动化工具面板（分享版）”，安装目录仍为 `SpreadsheetToolsShare` 以便原地升级。朋友解压后双击 `双击安装.cmd`，自动安装到 `%LOCALAPPDATA%\SpreadsheetToolsShare`，创建桌面入口和开机启动项，使用 `Ctrl+Shift+E`。仅支持 64 位 Windows，需自行安装 Excel 或 WPS 桌面版；卸载时双击包中的 `卸载.cmd`。
 
 安装器支持 `-InstallRoot <路径> -NoShortcuts -NoLaunch`，供隔离安装验证；分享版脚本支持 `--self-test`，仅构建隐藏面板并报告启动结果，不连接或修改工作簿。分享版使用独立安装目录和启动项，建议同一电脑只运行一个占用该快捷键的面板版本。
 

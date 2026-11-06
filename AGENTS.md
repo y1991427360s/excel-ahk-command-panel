@@ -39,7 +39,7 @@
 - “批量转可信 DWG”只把选区里的 `.dwg` 和文件夹写进临时清单，交给 `AutoCAD2018_lisp\tools\trusted_dwg_batch.py --from-file` 在可见命令行窗口运行；脚本用 `accoreconsole` 导出副本到 `可信DWG\`，不改原文件、不连接运行中的 CAD。转换逻辑只在该脚本维护，面板不复制一份。
 - Windows 11 的 `Shell.Application.SelectedItems` 可能返回旧标签页或旧选中项；DWG 当前选区必须通过资源管理器原生 `Ctrl+C` 读取，并恢复原剪贴板、避免写入 CopyQ 历史。
 - 合并 PDF 时用 `Ctrl+C` 取得选中文件后，按文件名自然排序（`StrCmpLogicalW`，与资源管理器“名称”排序一致）再合并，不依赖选择顺序；输出到首个 PDF 所在目录；通过临时 Python 脚本调用 `pypdf`，不修改源文件，覆盖目标前必须明确确认。
-- 统计图幅调用 `tools\drawing_sheet_sizes.py`：短边定基本图幅、长边按 0.25 倍取加长倍数，列顺序与《图纸打印明细》表头（A0 ~ A4 共 23 列）一致；压缩包只解压到临时目录，不改源文件。改判定规则时用真实图纸 PDF 回归验证。
+- 合并 PDF 和统计图幅都只通过 `PdfToolCommand()` 调用 `tools\pdf_tools.py`（`merge` / `sizes` 子命令）；分享版在 `packaging\share-panel.ahk` 覆盖该函数改用包内 `pdf-tools.exe`，不要在这两个功能里直接写 `python`。统计图幅：短边定基本图幅、长边按 0.25 倍取加长倍数，列顺序与《图纸打印明细》表头（A0 ~ A4 共 23 列）一致；压缩包只解压到临时目录，不改源文件。改判定规则时用真实图纸 PDF 回归验证。
 - Word 转 PDF 支持 `.doc`、`.docx`、`.docm`，通过 Microsoft Word COM 以只读方式导出到源文件同目录；覆盖同名 PDF 前必须明确确认，禁止保存或修改源文档。
 - Excel 转 PDF 支持 `.xls`、`.xlsx`、`.xlsm`、`.xlsb`，通过 Microsoft Excel COM 将整个工作簿（含隐藏工作表）导出为一个同目录同名 PDF；工作簿只读打开、不保存，临时显示的隐藏工作表必须恢复原状态，覆盖目标前必须明确确认。
 - 读取 `CF_HDROP` 时必须在约 1 秒内每 50ms 重试：资源管理器分多次写入剪贴板格式，`ClipWait` 返回时可能还没有 `CF_HDROP`（错误码 1418），剪贴板也可能仍被资源管理器或 CopyQ 占用（`OpenClipboard` 错误码 5）；只读一次会让首次打开面板时文件类按钮变灰（2026-11-04 实测）。
@@ -61,3 +61,4 @@
 - 自动化回归测试套件：`tests\merge-split-benchmark.ahk`（合并/拆分 1000 行性能基准与撤销回归）与 `tests\spreadsheet-export-smoke.ahk`（选区信息导出冒烟测试）。
 - 安装或热重载运行 `powershell -ExecutionPolicy Bypass -File .\install.ps1`。
 - 启动项必须是 `excel-command-panel.lnk`，且启动文件夹内不能遗留 `.disabled` 等会被当作启动项的文件；系统自带的 `desktop.ini` 除外。
+- 分享包名为“自动化工具面板”，`python packaging\build-share.py` 默认输出到桌面；桌面只保留最新一个分享包，旧包（含旧名“表格工具面板-*.zip”）由构建脚本移到回收站。改分享包内容后要重新构建，并做隔离安装（`setup.ahk install --root ... --shortcut-root ... --quiet --no-launch`）和 `--self-test` 验证；测试解压用 `Expand-Archive`，MSYS `unzip` 会弄乱中文文件名。

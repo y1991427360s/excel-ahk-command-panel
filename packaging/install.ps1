@@ -1,4 +1,4 @@
-param([string]$InstallRoot = (Join-Path $env:LOCALAPPDATA 'SpreadsheetToolsShare'), [switch]$NoShortcuts, [switch]$NoLaunch)
+﻿param([string]$InstallRoot = (Join-Path $env:LOCALAPPDATA 'SpreadsheetToolsShare'), [switch]$NoShortcuts, [switch]$NoLaunch)
 $ErrorActionPreference = 'Stop'
 try {
     if (-not [Environment]::Is64BitOperatingSystem) { throw '此安装包需要 64 位 Windows。' }
@@ -27,11 +27,13 @@ try {
         $desktopDir = [Environment]::GetFolderPath('Desktop')
         foreach ($directory in @($startupDir, $desktopDir)) {
             New-Item -ItemType Directory -Path $directory -Force | Out-Null
-            $link = $shell.CreateShortcut((Join-Path $directory '表格工具面板（分享版）.lnk'))
+            $oldLink = Join-Path $directory '表格工具面板（分享版）.lnk'
+            if ((Test-Path -LiteralPath $oldLink) -and $shell.CreateShortcut($oldLink).TargetPath -eq $exePath) { Remove-Item -LiteralPath $oldLink }
+            $link = $shell.CreateShortcut((Join-Path $directory '自动化工具面板（分享版）.lnk'))
             $link.TargetPath = $exePath
             $link.Arguments = '"' + $scriptPath + '"'
             $link.WorkingDirectory = $InstallRoot
-            $link.Description = 'Excel / WPS 表格工具，快捷键 Ctrl+Shift+E'
+            $link.Description = '自动化工具面板，快捷键 Ctrl+Shift+E'
             $link.Save()
         }
     }

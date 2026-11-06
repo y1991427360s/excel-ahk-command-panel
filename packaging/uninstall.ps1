@@ -1,4 +1,4 @@
-param([string]$InstallRoot = (Join-Path $env:LOCALAPPDATA 'SpreadsheetToolsShare'))
+﻿param([string]$InstallRoot = (Join-Path $env:LOCALAPPDATA 'SpreadsheetToolsShare'))
 $ErrorActionPreference = 'Stop'
 try {
     $InstallRoot = [IO.Path]::GetFullPath($InstallRoot)
@@ -10,12 +10,12 @@ try {
     } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
     $shell = New-Object -ComObject WScript.Shell
     foreach ($directory in @([Environment]::GetFolderPath('Startup'), [Environment]::GetFolderPath('Desktop'))) {
-        $linkPath = Join-Path $directory '表格工具面板（分享版）.lnk'
-        if (Test-Path -LiteralPath $linkPath) {
-            if ($shell.CreateShortcut($linkPath).TargetPath -eq $exePath) { Remove-Item -LiteralPath $linkPath }
+        foreach ($linkName in @('自动化工具面板（分享版）.lnk', '表格工具面板（分享版）.lnk')) {
+            $linkPath = Join-Path $directory $linkName
+            if ((Test-Path -LiteralPath $linkPath) -and $shell.CreateShortcut($linkPath).TargetPath -eq $exePath) { Remove-Item -LiteralPath $linkPath }
         }
     }
-    foreach ($name in @('AutoHotkey64.exe', 'spreadsheet-panel.ahk', 'AutoHotkey-license.txt', 'AutoHotkey-source.txt', 'AutoHotkey-source.zip', '使用说明.txt')) {
+    foreach ($name in @('AutoHotkey64.exe', 'spreadsheet-panel.ahk', 'pdf-tools.exe', 'AutoHotkey-license.txt', 'AutoHotkey-source.txt', 'AutoHotkey-source.zip', '使用说明.txt')) {
         $path = Join-Path $InstallRoot $name
         if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path }
     }

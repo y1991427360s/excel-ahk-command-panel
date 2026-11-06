@@ -13,8 +13,8 @@ global SpreadsheetRepeatAction := ""
 global SpreadsheetRepeatPending := ""
 global InputMethodProfileKey := "HKCU\Control Panel\International\User Profile"
 global ShareSelfTest := A_Args.Length && A_Args[1] = "--self-test"
-A_IconTip := "工具面板（分享版）：Ctrl+Shift+E"
-A_TrayMenu.Add("退出表格工具面板", (*) => ExitApp())
+A_IconTip := "自动化工具面板（分享版）：Ctrl+Shift+E"
+A_TrayMenu.Add("退出自动化工具面板", (*) => ExitApp())
 if ShareSelfTest {
     Suspend(true)
     ShowSharePanel()
@@ -43,7 +43,7 @@ SharePanelPages() {
         Map("key", "table", "title", "表格工具", "icon", Chr(0xE80A)),
         Map("key", "dwg", "title", "CAD 图纸", "icon", Chr(0xE8E5)),
         Map("key", "rename", "title", "批量改名", "icon", Chr(0xE8AC)),
-        Map("key", "files", "title", "转成 PDF", "icon", Chr(0xE8A5)),
+        Map("key", "files", "title", "文件处理", "icon", Chr(0xE8A5)),
         Map("key", "ime", "title", "默认输入法", "icon", Chr(0xE765)),
         Map("key", "help", "title", "使用说明", "icon", Chr(0xE897))
     ]
@@ -90,7 +90,7 @@ ShowSharePanel() {
         hasFiles := fileCount > 0
         hasDwg := SelectedDwgPath != ""
         colors := ModernPanelColors()
-        ui := ModernPanelCreate("工具面板（分享版）")
+        ui := ModernPanelCreate("自动化工具面板（分享版）")
         panel := ui["gui"]
 
         if (colors["sidebar"] != "") {
@@ -98,7 +98,7 @@ ShowSharePanel() {
             sidebarStyle["radius"] := 0
             ModernPanelLabelAt(ui, 0, 0, 188, 586, "", sidebarStyle)
         }
-        ModernPanelLabelAt(ui, 26, 20, 146, 26, "工具面板", ModernPanelTextStyle(colors["text"], 13, true))
+        ModernPanelLabelAt(ui, 26, 20, 146, 26, "自动化工具面板", ModernPanelTextStyle(colors["text"], 13, true))
         ModernPanelLabelAt(ui, 26, 46, 146, 18, "Ctrl+Shift+E", ModernPanelTextStyle(colors["secondary"], 9))
         navItems := Map()
         navY := 84
@@ -165,10 +165,15 @@ ShowSharePanel() {
             : "请先在资源管理器或桌面选中文件，再按 Ctrl+Shift+E。改名前会显示预览并要求确认。")
 
         ModernPanelBeginPage(ui, "files", contentX, contentY, contentW)
-        ModernPanelSection(ui, "转换")
+        ModernPanelSection(ui, "PDF")
+        ModernPanelRow(ui, ["合并选中的 PDF", MergeSelectedPdfFiles, hasFiles, Chr(0xE8F1)]
+            , ["统计图幅", CountSelectedDrawingSheetSizes, hasFiles, Chr(0xE9D2)])
+        ModernPanelNote(ui, "合并按文件名顺序，保存到首个 PDF 所在文件夹；统计图幅可选 PDF、文件夹或 rar/zip/7z 压缩包，结果可复制成打印明细表一行。", 2)
+        ModernPanelSpace(ui, 6)
+        ModernPanelSection(ui, "转成 PDF")
         ModernPanelRow(ui, ["Word 转 PDF", ConvertSelectedWordFilesToPdf, hasFiles, Chr(0xE8A5)]
             , ["Excel 转 PDF", ConvertSelectedExcelFilesToPdf, hasFiles, Chr(0xE80A)])
-        ModernPanelNote(ui, "需要已安装 Microsoft Word / Excel。转换后保存为同目录同名 PDF，Excel 会导出整个工作簿；源文件只读打开、不修改，覆盖已有 PDF 前会先确认。", 3)
+        ModernPanelNote(ui, "需要已安装 Microsoft Word / Excel。转换后保存为同目录同名 PDF，Excel 会导出整个工作簿；源文件只读打开、不修改，覆盖前会先确认。", 2)
 
         ModernPanelBeginPage(ui, "ime", contentX, contentY, contentW)
         ModernPanelSection(ui, "替代默认输入法")
@@ -241,4 +246,15 @@ ShareOpenDwgFile(chooseProgram, *) {
         MsgBox("无法打开图纸：`n`n" . SelectedDwgPath . "`n`n" . err.Message
             . (chooseProgram ? "" : "`n`n可能没有程序关联 .dwg，请改用“选择打开方式”。"), title, "Icon!")
     }
+}
+
+; 分享版的 PDF 工具入口：用包内自带的 pdf-tools.exe（由 tools/pdf_tools.py 打包），朋友电脑不需要额外运行环境。
+; 与主面板同名，打包时以这里的定义为准。
+PdfToolCommand(title) {
+    tool := A_ScriptDir . "\pdf-tools.exe"
+    if !FileExist(tool) {
+        MsgBox("找不到 PDF 工具：`n" . tool . "`n`n请重新运行安装包里的“双击安装.cmd”。", title, "Icon!")
+        return ""
+    }
+    return '"' . tool . '"'
 }

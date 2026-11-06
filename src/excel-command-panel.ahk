@@ -2877,59 +2877,38 @@ MergeSelectedPdfFiles() {
         , previewLines, "输出位置：" . outputPath . "`n`n继续？")
         return
 
-    uniqueSuffix := A_NowUTC . "-" . Random(100000, 999999)
-    scriptPath := A_Temp . "\merge-selected-pdfs-" . uniqueSuffix . ".py"
-    tempOutputPath := outputPath . ".tmp-" . uniqueSuffix
-    pythonScript := "import sys`n"
-        . "from pypdf import PdfWriter`n"
-        . "inputs = sys.argv[1:-2]`n"
-        . "temp_output, final_output = sys.argv[-2:]`n"
-        . "writer = PdfWriter()`n"
-        . "try:`n"
-        . "    for path in inputs:`n"
-        . "        writer.append(path)`n"
-        . "    with open(temp_output, 'wb') as output:`n"
-        . "        writer.write(output)`n"
-        . "finally:`n"
-        . "    writer.close()`n"
-        . "import os`n"
-        . "if os.path.exists(final_output):`n"
-        . "    os.remove(final_output)`n"
-        . "os.rename(temp_output, final_output)`n"
-
+    tool := PdfToolCommand(title)
+    if (tool = "")
+        return
+    ; pdf_tools merge 先写临时文件，成功后再替换目标，失败时不留半成品
+    commandLine := tool . ' merge "' . outputPath . '"'
+    for _, path in pdfFiles
+        commandLine .= ' "' . path . '"'
     try {
-        if FileExist(tempOutputPath)
-            FileDelete(tempOutputPath)
-        FileAppend(pythonScript, scriptPath, "UTF-8")
-        commandLine := 'python "' . scriptPath . '"'
-        for _, path in pdfFiles
-            commandLine .= ' "' . StrReplace(path, '"', '\"') . '"'
-        commandLine .= ' "' . tempOutputPath . '" "' . outputPath . '"'
         exitCode := RunWait(commandLine, outputDir, "Hide")
         if (exitCode != 0) {
-            if FileExist(tempOutputPath)
-                FileDelete(tempOutputPath)
-            MsgBox("PDF 合并失败。请确认 PDF 未损坏且本机 Python 已安装 pypdf。`n`n退出代码：" . exitCode, title, "Icon!")
+            MsgBox("PDF 合并失败。请确认 PDF 未损坏、未加密，且目标文件没有被其他程序打开。`n`n退出代码：" . exitCode, title, "Icon!")
             return
         }
         TrayTip("已合并 " . pdfFiles.Length . " 个 PDF 文件。", title, 1)
     } catch as err {
-        if FileExist(tempOutputPath)
-            try FileDelete(tempOutputPath)
         MsgBox("PDF 合并失败：`n`n" . err.Message, title, "Icon!")
-    } finally {
-        if FileExist(scriptPath)
-            try FileDelete(scriptPath)
     }
+}
+
+; PDF 工具入口：主面板用系统 python 运行 tools\pdf_tools.py；分享版在 share-panel.ahk 里
+; 定义同名函数改用包内 pdf-tools.exe（打包时以分享版里的同名函数为准）。找不到时提示并返回空串。
+PdfToolCommand(title) {
+    script := A_ScriptDir . "\..\tools\pdf_tools.py"
+    if !FileExist(script) {
+        MsgBox("找不到 PDF 工具脚本：`n" . script, title, "Icon!")
+        return ""
+    }
+    return 'python "' . script . '"'
 }
 
 CountSelectedDrawingSheetSizes() {
     title := "统计图幅"
-    script := A_ScriptDir . "\..\tools\drawing_sheet_sizes.py"
-    if !FileExist(script) {
-        MsgBox("找不到统计脚本：`n" . script, title, "Icon!")
-        return
-    }
 
     sources := []
     for _, path in GetSelectedFilePaths() {
@@ -2946,7 +2925,10 @@ CountSelectedDrawingSheetSizes() {
     uniqueSuffix := A_NowUTC . "-" . Random(100000, 999999)
     reportPath := A_Temp . "\sheet-size-report-" . uniqueSuffix . ".txt"
     rowPath := A_Temp . "\sheet-size-row-" . uniqueSuffix . ".txt"
-    commandLine := 'python "' . script . '" --report "' . reportPath . '" --row "' . rowPath . '"'
+    tool := PdfToolCommand(title)
+    if (tool = "")
+        return
+    commandLine := tool . ' sizes --report "' . reportPath . '" --row "' . rowPath . '"'
     for _, path in sources
         commandLine .= ' "' . RTrim(path, "\") . '"'
 
@@ -2957,7 +2939,7 @@ CountSelectedDrawingSheetSizes() {
         report := FileExist(reportPath) ? FileRead(reportPath, "UTF-8") : ""
         row := FileExist(rowPath) ? FileRead(rowPath, "UTF-8") : ""
         if (report = "") {
-            MsgBox("统计失败。请确认本机 Python 已安装 pypdf。`n`n退出代码：" . exitCode, title, "Icon!")
+            MsgBox("统计失败，没有得到统计结果。`n`n退出代码：" . exitCode, title, "Icon!")
             return
         }
         if (exitCode != 0) {
