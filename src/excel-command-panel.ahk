@@ -3217,38 +3217,187 @@ ShowSheetSizeReport(title, report, row) {
             tailLines.Push(line)
     }
 
-    dlg := Gui("+AlwaysOnTop -MinimizeBox", title)
+    ; 明细里可能带压缩包名和子文件夹（“xx.rar › 文件夹\文件.pdf”）：列表只显示最后的文件名，完整路径在下方信息条里看。
+    baseNames := []
+    for _, item in details
+        baseNames.Push(RegExMatch(item[1], "[^\\/›]+$", &bm) ? Trim(bm[0]) : item[1])
+
+    ; 汇总压成两行：总数一行，各图幅张数横排一行（窗口窄时自动折行），不再每个图幅占一行。
+    headLines := [], sizeItems := []
+    for _, line in summaryLines {
+        if (Trim(line) = "")
+            continue
+        if RegExMatch(line, "^\s+(\S.*)$", &m)
+            sizeItems.Push(m[1])
+        else
+            headLines.Push(line)
+    }
+    summaryHead := JoinLines(headLines)
+    summary := summaryHead  ; 图幅张数行在排版时按宽度装行（见 PackSummary）
+
+    dlg := Gui("+AlwaysOnTop -MinimizeBox +Resize +MinSize760x480", title)
     dlg.BackColor := "FFFFFF"
     dlg.MarginX := 16, dlg.MarginY := 14
     dlg.SetFont("s10 c1F2329", "Microsoft YaHei UI")
-    dlg.AddText("w720", Trim(JoinLines(summaryLines), "`n"))
+    summaryText := dlg.AddText("w920", summary)
+    lv := "", fullNameText := "", headerText := "", nameColW := 0
     if (details.Length > 0) {
-        dlg.AddText("w720 y+10", "各文件明细（共 " . details.Length . " 项，列表可上下滚动）：")
-        lv := dlg.AddListView("w720 r16 -Multi NoSort NoSortHdr Grid", ["序号", "文件名", "张数", "图幅"])
+        headerText := dlg.AddText("w920 y+8", "各文件明细（共 " . details.Length . " 项）：单击一行在下方显示所在位置，双击复制文件名。")
+        lv := dlg.AddListView("w920 r16 -Multi NoSort NoSortHdr Grid", ["序号", "文件名", "张数", "图幅"])
         for index, item in details
-            lv.Add(, index, item[1], item[2], item[3])
+            lv.Add(, index, baseNames[index], item[2], item[3])
         lv.ModifyCol(1, "52 Integer Center")
-        lv.ModifyCol(2, 430)
         lv.ModifyCol(3, "56 Integer Center")
         lv.ModifyCol(4, "AutoHdr")
+        dlg.SetFont("s10 c1F2329")
+        fullNameText := dlg.AddEdit("w920 y+6 r1 Multi ReadOnly -VScroll -E0x200 BackgroundF7F8FA", "（单击上方列表中的一行查看文件所在位置）")
+        lv.OnEvent("ItemSelect", (ctrl, item, selected) => selected ? ShowFullName(item) : 0)
+        lv.OnEvent("DoubleClick", (ctrl, item) => item ? (A_Clipboard := baseNames[item]
+            , ToolTip("已复制文件名"), SetTimer(() => ToolTip(), -1200)) : 0)
     }
+    tailText := ""
     if (tailLines.Length > 0) {
         dlg.SetFont("s10 cD32F2F")
-        dlg.AddText("w720 y+8", Trim(JoinLines(tailLines), "`n"))
+        tailText := dlg.AddText("w920 y+8", Trim(JoinLines(tailLines), "`n"))
     }
     dlg.SetFont("s10 c6B7280")
-    dlg.AddText("w720 y+8", "“复制明细表一行”：A0 ~ A4 共 23 列，粘贴到打印明细表的“A0”列。")
+    hintText := dlg.AddText("w420 y+8", "“复制明细表一行”：A0 ~ A4 共 23 列，粘贴到打印明细表的“A0”列。")
     dlg.SetFont("s10 c1F2329")
-    rowBtn := dlg.AddButton("x288 w170 Default", "复制明细表一行")
+    rowBtn := dlg.AddButton("x488 w170 Default", "复制明细表一行")
     textBtn := dlg.AddButton("x+8 w150", "复制完整统计文字")
     closeBtn := dlg.AddButton("x+8 w100", "关闭")
+
+    dpi := A_ScreenDPI / 96
+    ; 按控件当前字体量出文字在给定宽度下折行后的高度（GUI 坐标）。
+    TextHeight(ctrl, w) {
+        hdc := DllCall("GetDC", "Ptr", ctrl.Hwnd, "Ptr")
+        oldFont := DllCall("SelectObject", "Ptr", hdc, "Ptr", SendMessage(0x31, 0, 0, ctrl), "Ptr")  ; WM_GETFONT
+        rc := Buffer(16, 0)
+        NumPut("Int", Round(w * dpi), rc, 8)
+        DllCall("DrawTextW", "Ptr", hdc, "WStr", ctrl.Text = "" ? " " : ctrl.Text, "Int", -1, "Ptr", rc, "UInt", 0xC10)  ; CALCRECT|WORDBREAK|NOPREFIX
+        DllCall("SelectObject", "Ptr", hdc, "Ptr", oldFont)
+        DllCall("ReleaseDC", "Ptr", ctrl.Hwnd, "Ptr", hdc)
+        return Ceil(NumGet(rc, 12, "Int") / dpi)
+    }
+    ; 量单行文字宽度（GUI 坐标）。
+    TextWidth(ctrl, str) {
+        hdc := DllCall("GetDC", "Ptr", ctrl.Hwnd, "Ptr")
+        oldFont := DllCall("SelectObject", "Ptr", hdc, "Ptr", SendMessage(0x31, 0, 0, ctrl), "Ptr")
+        rc := Buffer(16, 0)
+        DllCall("DrawTextW", "Ptr", hdc, "WStr", str, "Int", -1, "Ptr", rc, "UInt", 0xC20)  ; CALCRECT|SINGLELINE|NOPREFIX
+        DllCall("SelectObject", "Ptr", hdc, "Ptr", oldFont)
+        DllCall("ReleaseDC", "Ptr", ctrl.Hwnd, "Ptr", hdc)
+        return Ceil(NumGet(rc, 8, "Int") / dpi)
+    }
+    ; 各图幅张数横排，按可用宽度整项装行，不会把“A4：5 张”拆到两行。
+    PackSummary(w) {
+        lines := [], cur := ""
+        for _, item in sizeItems {
+            trial := cur = "" ? item : cur . "　　" . item
+            if (cur != "" && TextWidth(summaryText, trial) > w - 4) {
+                lines.Push(cur)
+                cur := item
+            } else
+                cur := trial
+        }
+        if (cur != "")
+            lines.Push(cur)
+        text := summaryHead
+        for _, line in lines
+            text .= (text != "" ? "`n" : "") . line
+        return text
+    }
+    ShowFullName(index) {
+        if (index < 1 || index > details.Length)
+            return
+        fullNameText.Value := index . ". 所在位置：" . details[index][1] . "`r`n图幅：" . details[index][3]
+        dlg.GetClientPos(, , &cw, &ch)
+        LayoutReport(dlg, 0, cw, ch)
+    }
+    ; 文件名列按最长文件名定宽（窗口太窄时才压缩），多出的宽度都给“图幅”列。
+    FitFileNameColumn() {
+        if !lv
+            return
+        rc := Buffer(16, 0)
+        DllCall("GetClientRect", "Ptr", lv.Hwnd, "Ptr", rc)  ; 客户区已扣除边框和竖向滚动条
+        used := 140  ; “图幅”列至少保留的宽度，最后用 AutoHdr 填满剩余宽度
+        for col in [1, 3]
+            used += SendMessage(0x101D, col - 1, 0, lv)  ; LVM_GETCOLUMNWIDTH
+        lv.ModifyCol(2, Max(120, Min(nameColW, NumGet(rc, 8, "Int") - used)))
+        lv.ModifyCol(4, "AutoHdr")
+    }
+    LongestWidth(texts) {
+        needW := 0
+        for _, text in texts
+            needW := Max(needW, SendMessage(0x1057, 0, StrPtr(text), lv))  ; LVM_GETSTRINGWIDTHW
+        return needW
+    }
+    ; 从上往下排：汇总、明细标题、列表（吃掉剩余高度）、所在位置；底部一行左提示右按钮。
+    LayoutReport(guiObj, minMax, w, h) {
+        if (minMax = -1)
+            return
+        cw := w - 32
+        closeBtn.GetPos(, , &bw, &bh)
+        btnY := h - 14 - bh
+        closeBtn.Move(w - 16 - bw, btnY)
+        textBtn.GetPos(, , &tw)
+        textBtn.Move(w - 16 - bw - 8 - tw, btnY)
+        rowBtn.GetPos(, , &rw)
+        btnLeft := w - 16 - bw - 8 - tw - 8 - rw
+        rowBtn.Move(btnLeft, btnY)
+        hintW := btnLeft - 16 - 12
+        hh := TextHeight(hintText, hintW)
+        if (hintW >= 260 && hh <= bh) {
+            hintText.Move(16, btnY + (bh - hh) // 2, hintW, hh)
+            bottom := btnY - 8
+        } else {
+            hh := TextHeight(hintText, cw)
+            hintText.Move(16, btnY - 6 - hh, cw, hh)
+            bottom := btnY - 6 - hh - 8
+        }
+        if tailText {
+            th := TextHeight(tailText, cw)
+            bottom -= th
+            tailText.Move(16, bottom, cw, th)
+            bottom -= 8
+        }
+        y := 14
+        packed := PackSummary(cw)
+        if (summaryText.Value != packed)
+            summaryText.Value := packed
+        sh := TextHeight(summaryText, cw)
+        summaryText.Move(16, y, cw, sh)
+        y += sh + 8
+        if !lv
+            return
+        hh2 := TextHeight(headerText, cw)
+        headerText.Move(16, y, cw, hh2)
+        y += hh2 + 4
+        fh := TextHeight(fullNameText, cw - 8) + 8
+        fullNameText.Move(16, bottom - fh, cw, fh)
+        lv.Move(16, y, cw, Max(120, bottom - fh - 6 - y))
+        FitFileNameColumn()
+    }
+    dlg.OnEvent("Size", LayoutReport)
     rowBtn.OnEvent("Click", (*) => (A_Clipboard := row, dlg.Destroy()
         , TrayTip("已复制 23 列图幅数量，可直接粘贴到打印明细表的 A0 列。", title, 1)))
     textBtn.OnEvent("Click", (*) => (A_Clipboard := report, dlg.Destroy(), TrayTip("已复制完整统计文字。", title, 1)))
     closeBtn.OnEvent("Click", (*) => dlg.Destroy())
     dlg.OnEvent("Close", (*) => dlg.Destroy())
     dlg.OnEvent("Escape", (*) => dlg.Destroy())
-    dlg.Show()
+    ; 初始大小：宽度够放最长文件名（最多占屏幕工作区 90%），高度占 85%，让列表一屏多显示几行。
+    MonitorGetWorkArea(MonitorGetPrimary(), &waL, &waT, &waR, &waB)
+    workW := (waR - waL) / dpi, workH := (waB - waT) / dpi
+    wantW := 920
+    if lv {
+        sizeTexts := []
+        for _, item in details
+            sizeTexts.Push(item[3])
+        nameColW := LongestWidth(baseNames) + 24  ; 文件名列宽 = 最长文件名 + 左右留白
+        wantW := (nameColW + LongestWidth(sizeTexts) + 24) / dpi + 52 + 56 + 30 + 32
+        FitFileNameColumn()
+    }
+    dlg.Show(Format("w{} h{}", Round(Min(Max(wantW, 920), workW * 0.9)), Round(Max(480, workH * 0.85))))
     rowBtn.Focus()
     WinWaitClose(dlg.Hwnd)
 }
