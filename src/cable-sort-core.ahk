@@ -741,8 +741,11 @@ CableSortCsvBubbles(job, cables) {
 
 ; 按气泡生成 CSV 文本，列格式同插件 YSDL3 导出：有分类框时 分类=气泡名、序号在每个气泡内按起点聚类重排；
 ; 单行电缆对调过起终点的交换起点、终点两列
-CableSortBuildCsvText(job, bubbles) {
-    box := job["mode"] = "box", out := "", n := 0
+; 按气泡生成导出的各行（每行一个字段数组），列格式同插件 aa:ysdl3-csv-rows：
+; 分类框模式为 分类、序号（气泡内按起点聚类）、起点、编号、芯数、型号、起点、终点、其余列；无分类列模式为 编号、芯数、型号、起点、终点、其余列。
+; clean 为真时按插件写出时的处理去掉“至”、修剪首尾空白（导出预览用）；另存 CSV 保持原样，与读入的 CSV 往返一致
+CableSortExportRows(job, bubbles, clean := false) {
+    box := job["mode"] = "box", rows := []
     for bubble in bubbles {
         seq := 0, prev := ""
         for cable in bubble["items"] {
@@ -764,13 +767,24 @@ CableSortBuildCsvText(job, bubbles) {
                     seq++, prev := start
                 fields.InsertAt(1, bubble["name"], seq . "", cells.Length ? cells[1] : "")
             }
-            line := ""
-            for i, v in fields
-                line .= (i > 1 ? "," : "") . CableSortCsvField(v)
-            out .= line . "`r`n", n++
+            if clean
+                for i, v in fields
+                    fields[i] := Trim(StrReplace(v, "至"), " `t`r`n")
+            rows.Push(fields)
         }
     }
-    if !n
+    return rows
+}
+
+CableSortBuildCsvText(job, bubbles) {
+    out := ""
+    for fields in CableSortExportRows(job, bubbles) {
+        line := ""
+        for i, v in fields
+            line .= (i > 1 ? "," : "") . CableSortCsvField(v)
+        out .= line . "`r`n"
+    }
+    if (out = "")
         throw Error("气泡里没有电缆，没有可保存的内容。")
     return out
 }

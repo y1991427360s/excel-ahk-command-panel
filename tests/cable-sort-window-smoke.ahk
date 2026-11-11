@@ -277,7 +277,7 @@ RunWindowSmoke() {
     s1["search"].Value := q
     CableSortSlotSearch(st, 1, false)
     n1 := s1["lv"].GetCount()
-    Check(n1 >= 1 && n1 <= b1["items"].Length && s1["sclear"].Visible && InStr(s1["sub"].Value, "搜到"), "气泡内搜索：" . q . " → " . n1)
+    Check(n1 >= 1 && n1 <= b1["items"].Length && !s1["search"].Visible && InStr(s1["sub"].Value, "搜到") && InStr(s1["foot"].Value, "搜到 " . n1), "气泡内搜索：" . q . " → " . n1)
     s1["lv"].Modify(0, "-Select"), s1["lv"].Modify(1, "Select")
     Check(ObjPtr(CableSortBubblePicked(st, 1)[1]) = ObjPtr(s1["rows"][1]), "筛选后选中对应实际条目")
     k1 := 0
@@ -288,11 +288,11 @@ RunWindowSmoke() {
     ; 点气泡里的电缆：底部详情栏显示完整起点、终点
     pickC := s1["rows"][1]
     CableSortLoadBubbleEditor(st, 1, 1)
-    dt := st["ctl"]["detail"].Value
-    Check(!InStr(dt, pickC["id"]) && InStr(dt, CableSortDisplay(CableSortStartCell(pickC))) && InStr(dt, CableSortDisplay(CableSortEndCell(pickC)))
-        && !InStr(dt, b1["name"]) && !InStr(dt, "芯") && st["detailStrong"], "详情栏只有起点、终点：" . dt)
+    dt := st["detailText"]
+    Check(InStr(dt, pickC["id"]) && InStr(dt, CableSortDisplay(CableSortStartCell(pickC))) && InStr(dt, CableSortDisplay(CableSortEndCell(pickC)))
+        && !InStr(dt, b1["name"]) && !InStr(dt, "芯") && st["detailStrong"], "详情栏有编号、起点、终点：" . dt)
     CableSortSwapKeep(st, [pickC])
-    Check(InStr(st["ctl"]["detail"].Value, "起点　" . CableSortDisplay(CableSortStartCell(pickC)) . "　　→"), "对调后详情栏跟着变")
+    Check(InStr(st["detailText"], "起点　" . CableSortDisplay(CableSortStartCell(pickC)) . "　　→"), "对调后详情栏跟着变")
     CableSortUndo(st, "undo")
     ; 放大窗口（放在屏幕外）：继承气泡的搜索词、单独搜索、改动和主窗口同步、撤销后跟着恢复
     z := CableSortZoom(st, 1, "x-4000 y0 w1000 h640 NoActivate")
@@ -320,7 +320,7 @@ RunWindowSmoke() {
             allOk := allOk && CableSortQueryMatch(cable, gq)
     }
     Check(want > 0 && got = want && allOk && st["ctl"]["search"].Value = gq && z["search"].Value = gq
-        && st["ctl"]["gclear"].Visible && InStr(st["ctl"]["detail"].Value, "全局搜索「131」"), "全局搜索：气泡里共 " . got . " / " . want)
+        && st["ctl"]["gclear"].Visible && InStr(st["detailText"], "全局搜索「131」"), "全局搜索：气泡里共 " . got . " / " . want)
     CableSortGlobalSearch(st, true)
     Check(st["slots"][1]["lv"].GetCount() = b1["items"].Length && z["lv"].GetCount() = b1["items"].Length
         && st["ctl"]["search"].Value = "" && !st["ctl"]["gclear"].Visible, "清空全局搜索全部恢复")
@@ -366,6 +366,29 @@ RunWindowSmoke() {
     }
     CableSortZoomClose(st, z)
     Check(!st["zooms"].Count, "关闭放大窗口")
+
+    ; 导出预览：行数 = 气泡里的电缆总数，列和另存 CSV 一致，“至”已去掉
+    total := 0
+    for b in st["bubbles"]
+        total += b["items"].Length
+    pg := CableSortPreview(st, "x-4000 y0 w1000 h600 NoActivate")
+    pr := st["previewRows"], raw := CableSortExportRows(st["job"], st["bubbles"])
+    hasZhi := false
+    for r in pr
+        for v in r
+            hasZhi := hasZhi || InStr(v, "至")
+    Check(pr.Length = total && pr.Length = raw.Length && pr[1].Length = raw[1].Length && !hasZhi, "导出预览行数 " . pr.Length . " / " . total)
+    plv := ""
+    for ctl in pg
+        if (ctl.Type = "ListView")
+            plv := ctl
+    Check(IsObject(plv) && plv.GetCount() = total, "预览表格行数")
+    if (A_Args.Length >= 2) {
+        DllCall("RedrawWindow", "Ptr", pg.Hwnd, "Ptr", 0, "Ptr", 0, "UInt", 0x185)
+        Sleep(200)
+        SaveWindowPng(pg.Hwnd, RegExReplace(A_Args[2], "\.png$", "-preview.png"))
+    }
+    pg.Destroy(), st["previewGui"] := ""
 
     Sleep(300)
     st["gui"].GetClientPos(, , &cw0, &ch0)

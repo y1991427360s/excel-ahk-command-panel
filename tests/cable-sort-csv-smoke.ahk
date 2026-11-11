@@ -44,7 +44,7 @@ Check(CableSortBuildCsvText(job, bubbles) = CableSortReadTextAuto(pBox), "有分
 ; 2. 窗口：CSV 模式，对调单行电缆、移到别的分类后另存
 CableSortOpen(job, "x-4000 y0 w1500 h880 NoActivate", "no", dir . "\progress.txt")
 st := CableSortUi
-Check(InStr(st["gui"].Title, "CSV") && st["ctl"]["apply"].Text = "另存 CSV…" && InStr(st["ctl"]["summary"].Value, "原文件和图纸都不动"), "CSV 模式窗口")
+Check(InStr(st["gui"].Title, "CSV") && st["ctl"]["apply"].Text = "另存 CSV…" && InStr(st["summaryText"], "原文件和图纸都不动"), "CSV 模式窗口")
 Check(st["bubbles"].Length = 2 && st["bubbles"][2]["items"].Length = 2, "按分类还原气泡")
 db := st["byKey"]["DB-01"], sg := st["byKey"]["SG-01"]
 CableSortSwapKeep(st, [db])

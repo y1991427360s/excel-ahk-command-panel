@@ -8,6 +8,7 @@
 
 #Include cable-sort-core.ahk
 #Include modern-panel-ui.ahk
+#Include cable-sort-look.ahk
 
 global CableSortJobPath := EnvGet("TEMP") . "\AA-YSDL3\job.txt"
 global CableSortResultPath := EnvGet("TEMP") . "\AA-YSDL3\result.txt"
@@ -88,13 +89,6 @@ CableSortColorRef(rgb) {
     return ((v & 0xFF) << 16) | (v & 0xFF00) | ((v >> 16) & 0xFF)
 }
 
-; 气泡配色：浅底 + 深色标题
-CableSortPalette(i) {
-    static list := [["EAF1FE", "2563EB"], ["F3EAFD", "9333EA"], ["FFF1E3", "EA580C"], ["E8F6EE", "16A34A"]
-        , ["FDECF3", "DB2777"], ["E4F6F8", "0891B2"], ["FFF7D6", "CA8A04"], ["EEF0F4", "4B5563"]]
-    return list[Mod(i - 1, list.Length) + 1]
-}
-
 ; ---------- 打开窗口 ----------
 
 ; showOptions、resume（ask 询问 / no 不恢复）、progressPath 供冒烟测试把窗口放到屏幕外、不碰工程目录
@@ -146,89 +140,104 @@ CableSortOpen(job, showOptions := "w1500 h880", resume := "ask", progressPath :=
     dlg.SetFont("s10 c1F2329", "Microsoft YaHei UI")
     c := Map()
     st["ctl"] := c
-    ; 最上面一行：全局搜索（同时筛选所有气泡、未分类列表和放大窗口；叉号先建、盖在输入框右端）
+    ; 版式（沉稳灰白风格，2026-11-11 按用户给的设计稿）：顶栏（全局搜索 + 气泡按钮）→ 浅灰摘要行 → 左中右三栏（细竖线分隔）→ 底栏。
+    ; 先建的控件在 Z 序上层：叉号、空列表提示要盖在别的控件上就先建；卡片、输入框描边这类底图建好后压到最下层（见 cable-sort-look.ahk）。
+
+    ; 顶栏：全局搜索（同时筛选所有气泡、未分类列表和放大窗口）
     dlg.SetFont("s9 c9CA3AF")
     c["gclear"] := dlg.AddText("x0 y0 w18 h18 Center Hidden BackgroundWhite +0x100", "✕")
     dlg.SetFont("s11 c1F2329 Norm")
-    c["gsearch"] := dlg.AddEdit("x16 y10 w720 +0x4000000")
+    c["gsearch"] := dlg.AddEdit("x16 y10 w720 h22 -E0x200 +0x4000000")
     DllCall("SendMessage", "Ptr", c["gsearch"].Hwnd, "UInt", 0x1501, "Ptr", 1, "WStr", "全局搜索：所有气泡和未分类列表一起搜编号、柜名或规格（Ctrl+F）…")
-    DllCall("SendMessage", "Ptr", c["gsearch"].Hwnd, "UInt", 0xD3, "Ptr", 2, "Ptr", 24 << 16)
+    c["gframe"] := CableSortFrameEdit(dlg, c["gsearch"], Chr(0xE721))
     dlg.SetFont("s10 c1F2329 Norm")
-    c["summary"] := dlg.AddText("x16 y56 w1400 h40", "")
+    c["newBubble"] := CableSortButton(dlg, "x0 y0 w136 h34", "＋ 新增分类气泡")
+    c["reclass"] := CableSortButton(dlg, "x0 y0 w172 h34", "全部按规则重新分类")
+    for key in ["divHead", "divSum", "divFoot", "ruleSep", "midSep"]
+        c[key] := dlg.AddText("x0 y0 w10 h1 BackgroundECEEF1")
+    for key in ["divL", "divM"]
+        c[key] := dlg.AddText("x0 y0 w1 h10 BackgroundECEEF1")
+    c["summary"] := CableSortAddPic(dlg, "x0 y0 w10 h38")     ; 摘要一行：数字加粗，待处理用浅琥珀胶囊
 
     ; 左：规则
-    dlg.SetFont("s10 c1F2329 Bold")
+    dlg.SetFont("s11 c1F2329 Bold")
     c["ruleTitle"] := dlg.AddText("x16 y104 w320", "前缀规则")
-    dlg.SetFont("s9 c6B7280 Norm")
+    dlg.SetFont("s9 c9CA3AF Norm")
     c["ruleSub"] := dlg.AddText("x16 y126 w320", "前缀（+编号范围）→ 起点柜，决定保留哪一端")
     dlg.SetFont("s10 c1F2329")
-    c["rules"] := dlg.AddListView("x16 y148 w320 h300 -Multi NoSort NoSortHdr Grid", ["前缀", "范围", "起点柜", "根数", "来源"])
-    c["prefixLabel"] := dlg.AddText("x16 y414 w36", "前缀")
-    c["prefix"] := dlg.AddEdit("x52 yp-3 w70")
-    c["rangeLabel"] := dlg.AddText("x132 yp+3 w36", "范围")
-    c["range"] := dlg.AddEdit("x168 yp-3 w100")
-    c["cabLabel"] := dlg.AddText("x16 y446 w48", "起点柜")
-    c["cab"] := dlg.AddComboBox("x66 yp-3 w270")
-    c["add"] := dlg.AddButton("x16 y478 w60", "添加")
-    c["modify"] := dlg.AddButton("x+4 w60", "修改")
-    c["delete"] := dlg.AddButton("x+4 w60", "删除")
-    c["ruleUp"] := dlg.AddButton("x+4 w64", "上移")
-    c["ruleDown"] := dlg.AddButton("x+4 w64", "下移")
-    dlg.SetFont("s9 c6B7280")
-    c["ruleHint"] := dlg.AddText("x16 y514 w320 h80", "灰色为自动推断。点中间的电缆会填入它的前缀和两端柜子，选好起点柜后点“添加”；带编号范围的规则优先。改规则后，未分类里定下起点的电缆自动放进对应气泡。")
+    c["rules"] := dlg.AddListView("x16 y148 w320 h300 -Multi NoSort NoSortHdr -E0x200 +0x4000000", ["前缀", "范围", "起点柜", "根数", "来源"])
+    CableSortStyleLv(c["rules"], 28)
+    dlg.SetFont("s10 c6B7280")
+    c["prefixLabel"] := dlg.AddText("x0 y0 w34", "前缀")
+    c["rangeLabel"] := dlg.AddText("x0 y0 w34", "范围")
+    c["cabLabel"] := dlg.AddText("x0 y0 w48", "起点柜")
     dlg.SetFont("s10 c1F2329")
-
-    ; 中：电缆列表
-    dlg.SetFont("s10 c1F2329 Bold")
-    c["midTitle"] := dlg.AddText("x352 y104 w300", "未分类电缆")
-    dlg.SetFont("s10 c1F2329 Norm")
-    ; 清空叉号盖在搜索框右端：先建的在 Z 序上层，搜索框带 WS_CLIPSIBLINGS 就不会把它盖掉；有文字时才显示
+    c["prefix"] := dlg.AddEdit("x0 y0 w70 h20 -E0x200 +0x4000000")
+    c["range"] := dlg.AddEdit("x0 y0 w100 h20 -E0x200 +0x4000000")
+    c["prefixFrame"] := CableSortFrameEdit(dlg, c["prefix"])
+    c["rangeFrame"] := CableSortFrameEdit(dlg, c["range"])
+    c["cab"] := dlg.AddComboBox("x0 y0 w270")
+    c["add"] := CableSortButton(dlg, "x0 y0 w60 h30", "添加", "primary")
+    c["modify"] := CableSortButton(dlg, "x0 y0 w56 h30", "修改")
+    c["delete"] := CableSortButton(dlg, "x0 y0 w56 h30", "删除")
+    c["ruleUp"] := CableSortButton(dlg, "x0 y0 w56 h30", "上移")
+    c["ruleDown"] := CableSortButton(dlg, "x0 y0 w56 h30", "下移")
     dlg.SetFont("s9 c9CA3AF")
-    c["searchClear"] := dlg.AddText("x630 y129 w18 h18 Center Hidden BackgroundWhite", "✕")
-    dlg.SetFont("s10 c1F2329 Norm")
-    c["search"] := dlg.AddEdit("x352 y126 w300 +0x4000000")
-    DllCall("SendMessage", "Ptr", c["search"].Hwnd, "UInt", 0x1501, "Ptr", 1, "WStr", "搜索编号、柜名或规格，空格分隔多个词…")  ; EM_SETCUEBANNER
-    DllCall("SendMessage", "Ptr", c["search"].Hwnd, "UInt", 0xD3, "Ptr", 2, "Ptr", 22 << 16)  ; EM_SETMARGINS 右边留出叉号的位置
-    c["mid"] := dlg.AddListView("x352 y158 w480 h420 Checked NoSort NoSortHdr Grid +0x4000000"
-        , ["编号", "起点（保留端）", "终点", "规格", "状态"])
-    c["moveTo"] := dlg.AddButton("x352 y548 w96", "移到分类 ▸")
-    c["swap"] := dlg.AddButton("x+6 w80", "对调起终点")
-    c["del"] := dlg.AddButton("x+6 w64", "删除")
-    c["trash"] := dlg.AddButton("x+6 w104", "已删除（0）…")
-    c["checkAll"] := dlg.AddButton("x+6 w80", "全选/清空")
-    c["selInfo"] := dlg.AddText("x352 y584 w480", "")
+    c["ruleHint"] := dlg.AddText("x0 y0 w320 h52", "灰色为自动推断。点中间的电缆会填入它的前缀和两端柜子，选好起点柜后点“添加”；带编号范围的规则优先。改规则后，未分类里定下起点的电缆自动放进对应气泡。")
 
-    ; 右：气泡
-    dlg.SetFont("s10 c1F2329 Bold")
-    c["bubTitle"] := dlg.AddText("x848 y104 w200", "分类气泡")
+    ; 中：未分类电缆
+    dlg.SetFont("s11 c1F2329 Bold")
+    c["midTitle"] := dlg.AddText("x0 y0 w300", "未分类电缆")
+    dlg.SetFont("s9 c9CA3AF Norm")
+    c["midSub"] := dlg.AddText("x0 y0 w300", "")
+    c["searchClear"] := dlg.AddText("x0 y0 w18 h18 Center Hidden BackgroundWhite +0x100", "✕")
+    ; 列表空了时盖在列表上的提示（全部已分类 / 没有搜到）
+    c["emptyPic"] := CableSortAddPic(dlg, "x0 y0 w56 h56 Hidden")
+    dlg.SetFont("s11 c1F2329 Bold")
+    c["emptyTitle"] := dlg.AddText("x0 y0 w240 h26 Center Hidden BackgroundWhite", "全部已分类")
+    dlg.SetFont("s9 c9CA3AF Norm")
+    c["emptySub"] := dlg.AddText("x0 y0 w240 h40 Center Hidden BackgroundWhite", "")
     dlg.SetFont("s10 c1F2329 Norm")
-    c["newBubble"] := dlg.AddButton("x1100 y100 w150", "＋ 新增分类气泡")
-    c["reclass"] := dlg.AddButton("x+8 w170", "全部按规则重新分类")
+    c["search"] := dlg.AddEdit("x0 y0 w300 h20 -E0x200 +0x4000000")
+    DllCall("SendMessage", "Ptr", c["search"].Hwnd, "UInt", 0x1501, "Ptr", 1, "WStr", "搜索编号、柜名或规格，空格分隔多个词…")  ; EM_SETCUEBANNER
+    c["searchFrame"] := CableSortFrameEdit(dlg, c["search"], Chr(0xE721))
+    c["mid"] := dlg.AddListView("x0 y0 w480 h420 Checked NoSort NoSortHdr -E0x200 +0x4000000"
+        , ["编号", "起点（保留端）", "终点", "规格", "状态"])
+    CableSortStyleLv(c["mid"], 28)
+    c["moveTo"] := CableSortButton(dlg, "x0 y0 w100 h30", "移到分类 ▸")
+    c["swap"] := CableSortButton(dlg, "x0 y0 w100 h30", "对调起终点")
+    c["del"] := CableSortButton(dlg, "x0 y0 w64 h30", "删除")
+    c["trash"] := CableSortButton(dlg, "x0 y0 w120 h30", "已删除（0）…")
+    c["checkAll"] := CableSortButton(dlg, "x0 y0 w96 h30", "全选/清空")
+    dlg.SetFont("s9 c9CA3AF")
+    c["selInfo"] := dlg.AddText("x0 y0 w480 h36", "")
+
+    ; 右：分类气泡（白底描边卡片；气泡内搜索按设计稿收起，统一用顶上的全局搜索，放大窗口里仍可单独搜）
+    dlg.SetFont("s11 c1F2329 Bold")
+    c["bubTitle"] := dlg.AddText("x0 y0 w200", "分类气泡")
+    dlg.SetFont("s9 c9CA3AF Norm")
+    c["hint"] := dlg.AddText("x0 y0 w600 h18 +0x4000", "勾选或多选后拖到气泡（从气泡拖回左边列表 = 移出分类）；气泡内上下拖动排序；双击气泡名称改名；右键电缆可对调起终点、移到分类、删除；右键气泡名称可放大、排序、删除气泡")
     st["slots"] := []
     loop slots {
         s := Map()
-        s["back"] := dlg.AddText("x848 y90 w300 h200 Hidden +0x4000000", "")
-        dlg.SetFont("s11 Bold")
-        s["title"] := dlg.AddText("x860 y98 w280 h24 Hidden BackgroundTrans +0x4000000", "")
-        dlg.SetFont("s9 Norm")
-        s["sub"] := dlg.AddText("x860 y122 w280 h18 Hidden BackgroundTrans c6B7280 +0x4000000", "")
-        ; 气泡内搜索：叉号先建（Z 序在上），搜索框带 WS_CLIPSIBLINGS 不盖住它
+        dlg.SetFont("s11 Bold c1F2329")
+        s["title"] := dlg.AddText("x0 y0 w280 h24 Hidden BackgroundWhite +0x100 +0x4000 +0x4000000", "")
         dlg.SetFont("s9 Norm c9CA3AF")
+        s["sub"] := dlg.AddText("x0 y0 w280 h18 Hidden BackgroundWhite +0x100 +0x4000 +0x4000000", "")
+        s["foot"] := dlg.AddText("x0 y0 w280 h18 Hidden BackgroundWhite +0x100 +0x4000 +0x4000000", "")
         s["sclear"] := dlg.AddText("x0 y0 w16 h16 Center Hidden BackgroundWhite +0x100", "✕")
-        dlg.SetFont("s9 Norm c1F2329")
-        s["search"] := dlg.AddEdit("x0 y0 w120 h24 Hidden +0x4000000")
-        DllCall("SendMessage", "Ptr", s["search"].Hwnd, "UInt", 0x1501, "Ptr", 1, "WStr", "搜索…")
-        DllCall("SendMessage", "Ptr", s["search"].Hwnd, "UInt", 0xD3, "Ptr", 2, "Ptr", 20 << 16)
-        dlg.SetFont("s9 Norm")
-        s["zoomBtn"] := dlg.AddText("x0 y0 w56 h20 Hidden BackgroundTrans Right +0x100 +0x4000000", "⤢ 放大")
+        s["search"] := dlg.AddEdit("x0 y0 w120 h24 Hidden +0x4000000")     ; 收起不显示，全局搜索仍经它记下每个气泡的搜索词
+        dlg.SetFont("s9 Norm c6B7280")
+        s["zoomBtn"] := dlg.AddText("x0 y0 w60 h20 Hidden BackgroundWhite Right +0x100 +0x4000000", "⤢ 放大")
         dlg.SetFont("s10 Norm c1F2329")
-        s["lv"] := dlg.AddListView("x858 y142 w280 h140 Hidden NoSort -Hdr -E0x200 +0x4000000", ["序", "编号", "起点 → 终点", "规格"])
-        ; 先建的子窗口在 Z 序上层：把底色块放到最下层，标题和列表才不会被它盖住（WS_CLIPSIBLINGS 让各控件只画自己的区域）
-        DllCall("SetWindowPos", "Ptr", s["back"].Hwnd, "Ptr", 1, "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)
-        s["lv"].ModifyCol(1, "36 Integer"), s["lv"].ModifyCol(2, 96), s["lv"].ModifyCol(4, 70)
+        s["lv"] := dlg.AddListView("x0 y0 w280 h140 Hidden NoSort -Hdr -E0x200 +0x4000000", ["序", "编号", "起点 → 终点", "规格"])
+        CableSortStyleLv(s["lv"], 27)
+        s["back"] := CableSortAddPic(dlg, "x0 y0 w300 h200 Hidden", true)   ; 卡片底图：拖放、右键的目标
+        CableSortToBottom(s["back"])
+        s["lv"].ModifyCol(1, "36 Integer"), s["lv"].ModifyCol(2, 100), s["lv"].ModifyCol(4, "72 Right")
         s["colors"] := [], s["bubble"] := "", s["rows"] := [], s["query"] := ""
         idx := A_Index
-        s["lv"].OnNotify(-12, ((i, lv, lp) => CableSortCustomDraw(st["slots"][i]["colors"], lp)).Bind(idx))
+        s["lv"].OnNotify(-12, ((i, lv, lp) => CableSortCustomDraw(st["slots"][i]["colors"], lp, -1, 1, [0, 3], true)).Bind(idx))
         s["lv"].OnNotify(-109, ((i, lv, lp) => CableSortBeginDrag(st, lv, st["slots"][i])).Bind(idx))
         s["lv"].OnNotify(-155, ((i, lv, lp) => CableSortKeyDown(st, lp, i)).Bind(idx))
         s["lv"].OnEvent("ItemFocus", ((i, lv, row) => CableSortLoadBubbleEditor(st, i, row)).Bind(idx))
@@ -239,19 +248,19 @@ CableSortOpen(job, showOptions := "w1500 h880", resume := "ask", progressPath :=
         st["slots"].Push(s)
     }
 
-    ; 底部
+    ; 底栏：状态 · 起终点胶囊 · 撤销 重做 导出 关闭
     dlg.SetFont("s9 c6B7280")
-    c["hint"] := dlg.AddText("x16 y820 w900 h20", "操作提示：勾选或多选后拖到气泡（从气泡拖回左边列表 = 移出分类）｜气泡内上下拖动排序｜双击气泡名称改名｜右键电缆：对调起终点、移到分类、排序、删除｜右键气泡名称：放大、整个气泡排序、删除气泡")
+    c["status"] := dlg.AddText("x0 y0 w300 h20 +0x4000 +0x200", "")      ; SS_ENDELLIPSIS + 竖直居中
+    c["detail"] := CableSortAddPic(dlg, "x0 y0 w300 h32")
     dlg.SetFont("s10 c1F2329")
-    c["status"] := dlg.AddText("x16 y840 w300 h20 +0x4000", "")              ; SS_ENDELLIPSIS
-    c["detail"] := dlg.AddText("x330 y836 w600 h26 +0x4200 BackgroundF7F8FA", "  点一下任意电缆，这里显示它的起点和终点")  ; 垂直居中 + 省略号
-    c["undoBtn"] := dlg.AddButton("x1000 y830 w90", "↶ 撤销")
-    c["redoBtn"] := dlg.AddButton("x+6 w90", "↷ 重做")
-    c["apply"] := dlg.AddButton("x1200 y830 w170 Default", "导出 CSV（中望 CAD）")
-    c["close"] := dlg.AddButton("x+8 w100", "关闭")
+    c["undoBtn"] := CableSortButton(dlg, "x0 y0 w100 h34", "↶ 撤销")
+    c["redoBtn"] := CableSortButton(dlg, "x0 y0 w84 h34", "↷ 重做")
+    c["preview"] := CableSortButton(dlg, "x0 y0 w84 h34", "预览")   ; 2026-11-11 用户要求：先看导出后的样子
+    c["apply"] := CableSortButton(dlg, "x0 y0 w120 h34", "导出 CSV", "primary")   ; 经中望 CAD 写 CSV；2026-11-11 用户要求去掉括号里的“中望 CAD”
+    c["close"] := CableSortButton(dlg, "x0 y0 w84 h34", "关闭")
 
-    c["rules"].ModifyCol(1, 56), c["rules"].ModifyCol(2, 56), c["rules"].ModifyCol(3, 120)
-    c["rules"].ModifyCol(4, "40 Integer"), c["rules"].ModifyCol(5, 44)
+    c["rules"].ModifyCol(1, 56), c["rules"].ModifyCol(2, 40), c["rules"].ModifyCol(3, 120)
+    c["rules"].ModifyCol(4, "40 Integer"), c["rules"].ModifyCol(5, 52)
 
     c["rules"].OnEvent("ItemFocus", (lv, row) => CableSortLoadRuleEditor(st, row))
     c["mid"].OnEvent("ItemFocus", (lv, row) => CableSortLoadMidEditor(st, row))
@@ -274,11 +283,12 @@ CableSortOpen(job, showOptions := "w1500 h880", resume := "ask", progressPath :=
     c["gclear"].OnEvent("Click", (*) => CableSortGlobalSearch(st, true))
     c["reclass"].OnEvent("Click", (*) => CableSortReclassAll(st))
     c["apply"].OnEvent("Click", (*) => CableSortApply(st))
+    c["preview"].OnEvent("Click", (*) => CableSortPreview(st))
     c["undoBtn"].OnEvent("Click", (*) => CableSortUndo(st, "undo"))
     c["redoBtn"].OnEvent("Click", (*) => CableSortUndo(st, "redo"))
     c["close"].OnEvent("Click", (*) => CableSortClose())
-    c["mid"].OnNotify(-12, (lv, lp) => CableSortCustomDraw(st["midColors"], lp, 4))   ; NM_CUSTOMDRAW，只给“状态”列着色
-    c["rules"].OnNotify(-12, (lv, lp) => CableSortCustomDraw(st["ruleColors"], lp, 4)) ; 只给“来源”列着色
+    c["mid"].OnNotify(-12, (lv, lp) => CableSortCustomDraw(st["midColors"], lp, 4, 0))   ; NM_CUSTOMDRAW，只给“状态”列着色，编号加粗
+    c["rules"].OnNotify(-12, (lv, lp) => CableSortCustomDraw(st["ruleColors"], lp, 4, 0)) ; 只给“来源”列着色，前缀加粗
     c["mid"].OnNotify(-109, (lv, lp) => CableSortBeginDrag(st, lv, 0))                 ; LVN_BEGINDRAG
     c["mid"].OnNotify(-155, (lv, lp) => CableSortMidKeyDown(st, lp))   ; Delete 删除，Ctrl+A 全选
     dlg.OnEvent("ContextMenu", (g, ctrl, item, isRC, x, y) => CableSortContextMenu(st, ctrl, item))
@@ -297,6 +307,7 @@ CableSortOpen(job, showOptions := "w1500 h880", resume := "ask", progressPath :=
     if (isCsv && job["dupCount"])
         resumeMsg := "注意：CSV 里有 " . job["dupCount"] . " 行编号重复（可能是几次导出追加在同一个文件里），已各自保留。" . resumeMsg
     c["status"].Value := resumeMsg
+    CableSortSetDetail(st, "点一下任意电缆，这里显示它的起点和终点", false)
     if isCsv
         c["apply"].Text := "另存 CSV…"
     dlg.Show(showOptions)
@@ -387,78 +398,110 @@ CableSortLayout(st, minMax, w, h) {
         return
     st["w"] := w, st["h"] := h
     c := st["ctl"]
-    leftW := 320, midX := 352, midW := Max(450, Round((w - midX - 16) * 0.40)), bubX := midX + midW + 16
-    bubW := w - bubX - 16
-    T := 44                                          ; 最上面全局搜索占的高度，其余整体下移
-    c["gsearch"].Move(16, 10, Min(760, w - 32))
-    c["gsearch"].GetPos(, , &gw, &gh)
-    c["gclear"].Move(16 + gw - 24, 10 + (gh - 18) // 2)
-    c["summary"].Move(16, 12 + T, w - 32)
-    c["ruleTitle"].Move(16, 60 + T)
-    c["ruleSub"].Move(16, 82 + T)
-    ; 底部
-    c["close"].GetPos(, , &bw, &bh)
-    by := h - 12 - bh
-    c["close"].Move(w - 16 - bw, by)
-    c["apply"].GetPos(, , &aw)
-    c["apply"].Move(w - 16 - bw - 8 - aw, by)
-    c["redoBtn"].GetPos(, , &rw2)
-    c["undoBtn"].GetPos(, , &uw2)
-    c["redoBtn"].Move(w - 16 - bw - 8 - aw - 24 - rw2, by)
-    c["undoBtn"].Move(w - 16 - bw - 8 - aw - 24 - rw2 - 6 - uw2, by)
-    rowW := w - 16 - bw - 8 - aw - 24 - rw2 - 6 - uw2 - 24 - 16
-    statusW := Min(300, Round(rowW * 0.3))
-    c["status"].Move(16, by + 6, statusW, 20)
-    c["detail"].Move(16 + statusW + 12, by + 2, rowW - statusW - 12, 28)
-    c["hint"].Move(16, by - 24, w - 32, 20)
-    bottom := by - 32
-    ; 左
-    hintH := 80
+    pad := 16
+    ; 顶栏：全局搜索在左，“新增分类气泡”“全部按规则重新分类”在右
+    headH := 60
+    c["reclass"].GetPos(, , &rw, &bh)
+    c["newBubble"].GetPos(, , &nw)
+    c["reclass"].Move(w - pad - rw, (headH - bh) // 2)
+    c["newBubble"].Move(w - pad - rw - 10 - nw, (headH - bh) // 2)
+    gw := Max(240, Min(740, w - pad * 2 - rw - nw - 40))
+    CableSortPlaceFramed(c["gframe"], c["gsearch"], pad, 12, gw, 36, 32)
+    c["gclear"].Move(pad + gw - 28, 12 + (36 - 18) // 2)
+    c["divHead"].Move(0, headH, w, 1)
+    ; 摘要行
+    sumY := headH + 1, sumH := 38
+    c["summary"].Move(0, sumY, w, sumH)
+    CableSortDrawSummary(st)
+    c["divSum"].Move(0, sumY + sumH, w, 1)
+    top := sumY + sumH + 1
+    ; 底栏：右边四个按钮，左边状态文字和起终点胶囊
+    footH := 58, fy := h - footH
+    c["divFoot"].Move(0, fy, w, 1)
+    c["close"].GetPos(, , , &bh)
+    by := fy + (footH - bh) // 2
+    x := w - pad
+    for key in ["close", "apply", "preview", "redoBtn", "undoBtn"] {
+        c[key].GetPos(, , &kw)
+        x -= kw
+        c[key].Move(x, by)
+        x -= key = "redoBtn" ? 8 : 10
+    }
+    rowR := x - 14
+    statusW := Min(340, Max(150, Round((rowR - pad) * 0.32)))
+    c["status"].Move(pad, by, statusW, bh)
+    st["detailArea"] := [pad + statusW + 14, fy + (footH - 32) // 2, Max(80, rowR - pad - statusW - 14), 32]
+    CableSortDrawDetail(st)
+    ; 三栏
+    leftW := 368, midW := Max(440, Round((w - leftW) * 0.37)), midX := leftW + 1, bubX := midX + midW + 1
+    c["divL"].Move(leftW, top, 1, fy - top)
+    c["divM"].Move(midX + midW, top, 1, fy - top)
+    colTop := top + 14, bottom := fy - 14
+    ; 左：规则列表 + 编辑区
+    lx := pad, lw := leftW - pad * 2
+    c["ruleTitle"].Move(lx, colTop, lw, 24)
+    c["ruleSub"].Move(lx, colTop + 26, lw, 18)
+    hintH := 52
     ruleHintY := bottom - hintH
-    btnRuleY := ruleHintY - 6 - 30
-    cabY := btnRuleY - 8 - 26
-    preY := cabY - 6 - 26
-    c["ruleHint"].Move(16, ruleHintY, leftW, hintH)
-    x := 16
+    btnRuleY := ruleHintY - 10 - 30
+    cabY := btnRuleY - 10 - 32
+    preY := cabY - 8 - 32
+    c["ruleSep"].Move(lx, preY - 12, lw, 1)
+    c["ruleHint"].Move(lx, ruleHintY, lw, hintH)
+    x := lx
     for key in ["add", "modify", "delete", "ruleUp", "ruleDown"] {
         c[key].GetPos(, , &kw)
         c[key].Move(x, btnRuleY)
-        x += kw + 4
-    }
-    c["cabLabel"].Move(16, cabY + 3)
-    c["cab"].Move(66, cabY, leftW - 50)
-    c["prefixLabel"].Move(16, preY + 3)
-    c["prefix"].Move(52, preY)
-    c["rangeLabel"].Move(132, preY + 3)
-    c["range"].Move(168, preY, leftW - 152)
-    c["rules"].Move(16, 104 + T, leftW, preY - 10 - 104 - T)
-    ; 中
-    c["midTitle"].Move(midX, 60 + T, midW)
-    c["search"].Move(midX, 82 + T, midW)
-    c["search"].GetPos(, , , &sh)
-    c["searchClear"].Move(midX + midW - 22, 82 + T + (sh - 18) // 2)
-    c["selInfo"].Move(midX, bottom - 20, midW)
-    btnY := bottom - 20 - 6 - 30
-    x := midX
-    for key in ["moveTo", "swap", "del", "trash", "checkAll"] {
-        c[key].GetPos(, , &kw)
-        c[key].Move(x, btnY)
         x += kw + 6
     }
-    c["mid"].Move(midX, 114 + T, midW, btnY - 8 - 114 - T)
-    ; 列宽按列表宽度分：编号、规格固定，“状态”至少 160，其余平分给起点、终点（扣掉勾选框和竖向滚动条）
-    rest := midW - 4 - SysGet(2) - 96 - 52
-    endW := Max(80, (rest - 170) // 2)
+    c["prefixLabel"].Move(lx, preY + 7)
+    CableSortPlaceFramed(c["prefixFrame"], c["prefix"], lx + 38, preY, 86, 32)
+    c["rangeLabel"].Move(lx + 138, preY + 7)
+    CableSortPlaceFramed(c["rangeFrame"], c["range"], lx + 176, preY, lw - 176, 32)
+    c["cabLabel"].Move(lx, cabY + 7)
+    c["cab"].Move(lx + 52, cabY + 3, lw - 52)
+    rt := colTop + 52
+    c["rules"].Move(lx - 4, rt, lw + 4, preY - 24 - rt)
+    c["rules"].ModifyCol(3, Max(80, lw - SysGet(2) - 4 - 56 - 40 - 40 - 52))
+    ; 中：未分类列表
+    mx := midX + pad, mw := midW - pad * 2
+    c["midTitle"].Move(mx, colTop, mw, 24)
+    c["midSub"].Move(mx, colTop + 26, mw, 18)
+    CableSortPlaceFramed(c["searchFrame"], c["search"], mx, colTop + 52, mw, 34, 32)
+    c["searchClear"].Move(mx + mw - 28, colTop + 52 + 8)
+    hy := bottom - 36
+    c["selInfo"].Move(mx, hy, mw, 36)
+    b2 := hy - 10 - 30, b1 := b2 - 6 - 30
+    for row in [[["moveTo", "swap", "del"], b1], [["trash", "checkAll"], b2]] {
+        x := mx
+        for key in row[1] {
+            c[key].GetPos(, , &kw)
+            c[key].Move(x, row[2])
+            x += kw + 6
+        }
+    }
+    c["midSep"].Move(mx, b1 - 12, mw, 1)
+    lt := colTop + 52 + 34 + 10, lh := b1 - 24 - lt
+    c["mid"].Move(mx - 4, lt, mw + 4, lh)
+    ; 列宽按列表宽度分：编号、规格固定，“状态”约 1/3，其余平分给起点、终点（扣掉竖向滚动条，不出横向滚动条）
+    rest := mw - SysGet(2) - 4 - 96 - 52
+    endW := Max(64, (rest - Max(110, rest // 3)) // 2)
     c["mid"].ModifyCol(1, 96), c["mid"].ModifyCol(2, endW), c["mid"].ModifyCol(3, endW), c["mid"].ModifyCol(4, 52)
-    c["mid"].ModifyCol(5, Max(160, rest - endW * 2))
-    ; 右
-    c["bubTitle"].Move(bubX, 60 + T)
-    c["reclass"].GetPos(, , &rw)
-    c["reclass"].Move(bubX + bubW - rw, 56 + T)
-    c["newBubble"].GetPos(, , &nw)
-    c["newBubble"].Move(bubX + bubW - rw - 8 - nw, 56 + T)
-    st["bubArea"] := [bubX, 92 + T, bubW, bottom - 92 - T]
+    c["mid"].ModifyCol(5, Max(60, rest - endW * 2))
+    ; 列表空了时的提示，放在列表中间偏上
+    ey := lt + Max(44, lh // 2 - 90)
+    c["emptyPic"].Move(mx + (mw - 56) // 2, ey, 56, 56)
+    CableSortDrawEmptyMark(c["emptyPic"])
+    c["emptyTitle"].Move(mx, ey + 68, mw, 26)
+    c["emptySub"].Move(mx, ey + 98, mw, 40)
+    ; 右：气泡
+    rx := bubX + pad, rw2 := w - bubX - pad * 2
+    c["bubTitle"].Move(rx, colTop, rw2, 24)
+    c["hint"].Move(rx, colTop + 26, rw2, 18)
+    st["bubArea"] := [rx, colTop + 52, rw2, bottom - colTop - 52]
     CableSortLayoutBubbles(st)
+    ; 控件挪位后整窗重画一次：首次显示时窗口还没画完就挪了位，旧位置会留下残影（2026-11-11 前台截屏发现）
+    DllCall("RedrawWindow", "Ptr", st["gui"].Hwnd, "Ptr", 0, "Ptr", 0, "UInt", 0x85)   ; INVALIDATE | ERASE | ALLCHILDREN
 }
 
 ; 气泡按网格排：不超过 4 个时 2 列，更多时宽度够就 3 列
@@ -469,32 +512,71 @@ CableSortLayoutBubbles(st) {
     cols := n <= 4 ? 2 : (area[3] >= 900 ? 3 : 2)
     cols := Max(1, Min(cols, n))
     rows := Max(1, Ceil(n / cols))
-    gap := 10
+    gap := 14
     cw := (area[3] - gap * (cols - 1)) // cols
     ch := (area[4] - gap * (rows - 1)) // rows
     for i, s in st["slots"] {
         if (i > n) {
-            for key in ["back", "title", "sub", "lv", "search", "sclear", "zoomBtn"]
+            for key in ["back", "title", "sub", "foot", "lv", "search", "sclear", "zoomBtn"]
                 s[key].Visible := false
             continue
         }
         x := area[1] + Mod(i - 1, cols) * (cw + gap)
         y := area[2] + ((i - 1) // cols) * (ch + gap)
         s["back"].Move(x, y, cw, ch)
-        zw := 56, sw := Max(80, Min(160, cw // 3))
-        sx := x + cw - 14 - zw - 6 - sw
-        s["title"].Move(x + 14, y + 6, Max(40, sx - x - 20), 24)
-        s["search"].Move(sx, y + 5, sw, 24)
-        s["sclear"].Move(sx + sw - 20, y + 9)
-        s["zoomBtn"].Move(x + cw - 14 - zw, y + 8, zw, 20)
-        s["sub"].Move(x + 14, y + 30, cw - 28, 18)
-        s["lv"].Move(x + 8, y + 50, cw - 16, Max(40, ch - 56))
+        if !(s.Has("cardSize") && s["cardSize"] = cw . "x" . ch) {
+            s["cardSize"] := cw . "x" . ch
+            CableSortDrawCard(s["back"])
+        }
+        s["title"].Move(x + 30, y + 10, Max(40, cw - 30 - 84), 24)
+        s["zoomBtn"].Move(x + cw - 16 - 60, y + 13, 60, 20)
+        s["sub"].Move(x + 16, y + 36, cw - 32, 18)
+        s["foot"].Move(x + 16, y + ch - 27, cw - 32, 18)
+        s["lv"].Move(x + 10, y + 60, cw - 20, Max(30, ch - 60 - 42))
         ; 列宽按客户区算（扣掉竖向滚动条），不出现横向滚动条
-        s["lv"].ModifyCol(3, Max(60, cw - 16 - 36 - 96 - 70 - SysGet(2) - 6))
-        for key in ["back", "title", "sub", "lv", "search", "zoomBtn"]
+        s["lv"].ModifyCol(3, Max(60, cw - 20 - 36 - 100 - 72 - SysGet(2) - 6))
+        for key in ["back", "title", "sub", "foot", "lv", "zoomBtn"]
             s[key].Visible := true
-        s["sclear"].Visible := s["query"] != ""
+        s["search"].Visible := false, s["sclear"].Visible := false
     }
+}
+
+; 气泡卡片底图：白底、浅灰描边、8 圆角；标题前灰色小圆点；底部一条细线隔开“共 N 项”
+CableSortDrawCard(pic) {
+    k := A_ScreenDPI / 96
+    CableSortPaint(pic, (g, w, h) => (
+        CableSortRound(g, 0, 0, w, h, 8 * k, "FFFFFF", "E4E6EB"),
+        CableSortRound(g, 16 * k, 18 * k, 8 * k, 8 * k, 4 * k, "9CA3AF"),
+        CableSortRect(g, 16 * k, h - 36 * k, w - 32 * k, 1, "F0F1F4")))
+}
+
+; 未分类列表空了时的对勾圆标
+CableSortDrawEmptyMark(pic) {
+    CableSortPaint(pic, (g, w, h) => (
+        CableSortRound(g, 1, 1, w - 2, h - 2, (h - 2) / 2, "EEF7F1", "CFE8D6"),
+        CableSortDrawText(g, Chr(0xE73E), 0, 0, w, h, 15, false, "166534", 1, "Segoe MDL2 Assets")))
+}
+
+; 摘要行：宽度不够时换成精简版（待处理只写总数，去掉末尾说明）
+CableSortDrawSummary(st) {
+    if !st.Has("summaryRuns")
+        return
+    full := st["summaryRuns"], compact := st["summaryCompact"], k := A_ScreenDPI / 96
+    CableSortPaint(st["ctl"]["summary"], (g, w, h) => CableSortDrawRuns(g
+        , CableSortRunsWidth(full, 9.5) + 32 * k <= w ? full : compact, 16 * k, h, 9.5, w - 12 * k), "F7F8FA")
+}
+
+; 底栏胶囊：选中电缆时浅绿底、深绿粗体起终点；否则浅灰底灰字提示。宽度随内容，最多占满可用宽度
+CableSortDrawDetail(st) {
+    if !(st.Has("detailArea") && st.Has("detailRuns"))
+        return
+    a := st["detailArea"], runs := st["detailRuns"], strong := st["detailStrong"], k := A_ScreenDPI / 96
+    want := Ceil((CableSortRunsWidth(runs, 10) + 30 * k) / k)
+    d := st["ctl"]["detail"]
+    d.Move(a[1], a[2], Min(a[3], Max(120, want)), a[4])
+    CableSortPaint(d, (g, w, h) => (
+        CableSortRound(g, 0, 0, w, h, 8 * k, strong ? "EEF7F1" : "F7F8FA", strong ? "D3EFDC" : "ECEEF1"),
+        CableSortDrawRuns(g, runs, 14 * k, h, 10, w - 10 * k)))
 }
 
 ; ---------- 填充 ----------
@@ -638,6 +720,18 @@ CableSortFillMid(st, keepChecked := true) {
     }
     st["midRows"] := rows, st["midColors"] := colors, st["lastCheck"] := 0
     lv.Opt("+Redraw")
+    ; 列表空了：盖一块“全部已分类 / 没有搜到”的提示
+    c := st["ctl"], empty := !rows.Length
+    if empty {
+        placed := 0
+        for cable in st["cables"]
+            placed += cable["bubble"] > 0
+        c["emptyTitle"].Value := Trim(q) != "" ? "没有搜到" : "全部已分类"
+        c["emptySub"].Value := Trim(q) != "" ? "未分类电缆里没有匹配「" . q . "」的。" : placed . " 项都已放进气泡，`n没有待分类的电缆。"
+    }
+    for key in ["emptyPic", "emptyTitle", "emptySub"]
+        if (c[key].Visible != empty)
+            c[key].Visible := empty
     CableSortLvScrollTo(lv, top)
     CableSortUpdateSummary(st)
     CableSortUpdateSelInfo(st)
@@ -646,15 +740,11 @@ CableSortFillMid(st, keepChecked := true) {
 CableSortFillBubble(st, i, select := "") {
     s := st["slots"][i], bubble := st["bubbles"][i]
     s["bubble"] := bubble
-    pal := CableSortPalette(bubble["id"])
-    s["back"].Opt("Background" . pal[1])
-    s["title"].Opt("c" . pal[2])
-    s["zoomBtn"].Opt("c" . pal[2])
-    s["title"].Value := "●  " . bubble["name"]
+    s["title"].Value := bubble["name"]
     rows := CableSortFilterRows(bubble["items"], s["query"])
     s["sub"].Value := CableSortBubbleSub(bubble, rows, s["query"])
-    CableSortFillItemsLv(s, bubble, rows, false, pal[1], select)
-    s["back"].Redraw(), s["title"].Redraw(), s["sub"].Redraw(), s["zoomBtn"].Redraw()
+    s["foot"].Value := (Trim(s["query"]) != "" ? "搜到 " . rows.Length . " 项 · " : "") . "共 " . bubble["items"].Length . " 项 · 拖动可微调顺序"
+    CableSortFillItemsLv(s, bubble, rows, false, "FFFFFF", select)
     if st["zooms"].Has(bubble["id"])
         CableSortFillZoom(st, st["zooms"][bubble["id"]], select)
 }
@@ -769,21 +859,43 @@ CableSortUpdateSummary(st) {
         deleted += cable["bubble"] = -1
     }
     Cnt(k) => counts.Has(k) ? counts[k] : 0
-    SplitPath(job["dwg"], &dwgName)
-    st["ctl"]["trash"].Text := "已删除（" . deleted . "）…"
+    trashText := "已删除（" . deleted . "）…"
+    if (st["ctl"]["trash"].Text != trashText)
+        st["ctl"]["trash"].Text := trashText, st["ctl"]["trash"].Redraw()
     red := 0
     for cable in st["cables"]
         red += CableSortRed(cable)
     total := st["cables"].Length
     c := st["ctl"]
-    c["midTitle"].Value := "未分类电缆（" . un . " 项，已放进气泡 " . (total - un) . " 项）"
-    c["summary"].Value := dwgName . "：配成 " . (total - Cnt("fixed")) . " 根电缆，另有 " . Cnt("fixed") . " 行第 2 列不是电缆编号；"
-        . st["bubbles"].Length . " 个分类气泡；规则 " . st["rules"].Length . " 条（本工程规则文件："
-        . (FileExist(st["rulesPath"]) ? "已读取" : "还没有") . "）。`n"
-        . "按规则 " . Cnt("ok") . " 根，手动 " . Cnt("manual") . " 根，待处理 " . red . " 根"
-        . (red ? "（没有规则 " . Cnt("norule") . "、编号无法识别 " . Cnt("unparsed") . "、两端对不上 " . Cnt("nomatch")
-            . "、编号重复 " . Cnt("problem") . "）" : "")
-        . "；未分类 " . un . " 项、已删除 " . deleted . " 项不会导出。" . (CableSortIsCsv(st) ? "CSV 重新整理：另存为新的 CSV，原文件和图纸都不动。" : "导出只写 CSV，不移动 CAD 里的清册文字。")
+    st["placedCount"] := total - un - deleted
+    c["midTitle"].Value := "未分类电缆（" . un . " 项）"
+    c["midSub"].Value := "已放进气泡 " . (total - un - deleted) . " 项" . (deleted ? "，已删除 " . deleted . " 项" : "")
+    ; 摘要一行：数字加粗深色，说明灰色，“·”分隔；只有待处理用浅琥珀胶囊（设计稿）
+    G(t) => [t, "6B7280", false]
+    B(n) => [String(n), "1F2329", true]
+    sep := ["  ·  ", "C4C8CF", false]
+    head := [G("共配成 "), B(total - Cnt("fixed")), G(" 根电缆（非电缆行 " . Cnt("fixed") . "）"), sep
+        , G("分类气泡 "), B(st["bubbles"].Length), G(" 个"), sep
+        , G("规则 "), B(st["rules"].Length), G(" 条（" . (FileExist(st["rulesPath"]) ? "已读取" : "本工程还没有规则文件") . "）"), sep
+        , G("按规则 "), B(Cnt("ok")), G(" 根"), sep, G("手动 "), B(Cnt("manual")), G(" 根"), sep]
+    tail := [sep, G("未分类 "), B(un), G(" 项"), sep, G("已删除 "), B(deleted), G(" 项（不导出）")]
+    pend := "待处理 " . red . " 根"
+    full := head.Clone(), compact := head.Clone()
+    if red {
+        full.Push([pend . "：无规则 " . Cnt("norule") . " · 无法识别 " . Cnt("unparsed") . " · 两端对不上 " . Cnt("nomatch")
+            . " · 编号重复 " . Cnt("problem"), "8A5A12", false, "FCF0DA"])
+        compact.Push([pend, "8A5A12", false, "FCF0DA"])
+    } else {
+        full.Push(G(pend)), compact.Push(G(pend))
+    }
+    full.Push(tail*), compact.Push(tail*)
+    full.Push(sep, G(CableSortIsCsv(st) ? "另存为新的 CSV，原文件和图纸都不动" : "导出只写 CSV"))
+    st["summaryRuns"] := full, st["summaryCompact"] := compact
+    text := ""                                       ; 摘要行是位图，留一份纯文字（测试和排查用）
+    for seg in full
+        text .= seg[1]
+    st["summaryText"] := text
+    CableSortDrawSummary(st)
 }
 
 CableSortUpdateSelInfo(st) {
@@ -974,7 +1086,7 @@ CableSortBeginDrag(st, srcLv, src) {
                 if (i > st["bubbles"].Length)
                     break
                 if (hwnd = s["lv"].Hwnd || hwnd = s["back"].Hwnd || hwnd = s["title"].Hwnd || hwnd = s["sub"].Hwnd
-                    || hwnd = s["search"].Hwnd || hwnd = s["zoomBtn"].Hwnd) {
+                    || hwnd = s["foot"].Hwnd || hwnd = s["zoomBtn"].Hwnd) {
                     target := i, view := s
                     if (hwnd = s["lv"].Hwnd)
                         tlv := s["lv"]
@@ -1088,7 +1200,7 @@ CableSortContextMenu(st, ctrl, item) {
             CableSortBubbleMenu(st, i)
             return
         }
-        if (ctrl.Hwnd = s["back"].Hwnd || ctrl.Hwnd = s["title"].Hwnd || ctrl.Hwnd = s["sub"].Hwnd || ctrl.Hwnd = s["zoomBtn"].Hwnd) {
+        if (ctrl.Hwnd = s["back"].Hwnd || ctrl.Hwnd = s["title"].Hwnd || ctrl.Hwnd = s["sub"].Hwnd || ctrl.Hwnd = s["foot"].Hwnd || ctrl.Hwnd = s["zoomBtn"].Hwnd) {
             CableSortBubbleTitleMenu(st, i)              ; 右键气泡名称：气泡菜单
             return
         }
@@ -1427,7 +1539,9 @@ CableSortTrashWindow(st) {
     dlg.BackColor := "FFFFFF"
     dlg.SetFont("s10 c1F2329", "Microsoft YaHei UI")
     dlg.AddText("x16 y12 w620", "这些电缆不显示、不导出。选中后点“恢复”，会回到未分类电缆列表。")
-    lv := dlg.AddListView("x16 y40 w620 h360 Grid NoSortHdr", ["编号", "起点（保留端）", "终点", "规格"])
+    lv := dlg.AddListView("x16 y40 w620 h360 NoSortHdr", ["编号", "起点（保留端）", "终点", "规格"])
+    CableSortStyleLv(lv, 28)
+    lv.OnNotify(-12, (l, lp) => CableSortCustomDraw([], lp, -1, 0, "", true))
     rows := []
     Fill() {
         rows.Length := 0
@@ -1458,10 +1572,10 @@ CableSortTrashWindow(st) {
         CableSortFillMid(st, false)
         st["ctl"]["status"].Value := "已恢复 " . picked.Length . " 项到未分类。"
     }
-    btn := dlg.AddButton("x16 y410 w110 Default", "恢复所选")
+    btn := CableSortButton(dlg, "x16 y410 w110 h32", "恢复所选", "primary")
     btn.OnEvent("Click", (*) => Restore(false))
-    dlg.AddButton("x+8 w110", "全部恢复").OnEvent("Click", (*) => Restore(true))
-    dlg.AddButton("x+8 w90", "关闭").OnEvent("Click", (*) => dlg.Destroy())
+    CableSortButton(dlg, "x+8 w110 h32", "全部恢复").OnEvent("Click", (*) => Restore(true))
+    CableSortButton(dlg, "x+8 w90 h32", "关闭").OnEvent("Click", (*) => dlg.Destroy())
     dlg.OnEvent("Escape", (*) => dlg.Destroy())
     Fill()
     dlg.Show("w652 h452")
@@ -1540,6 +1654,7 @@ CableSortUpdateUndoButtons(st) {
     c["undoBtn"].Text := "↶ 撤销" . (st["undo"].Length ? "（" . st["undo"].Length . "）" : "")
     c["undoBtn"].Enabled := st["undo"].Length > 0
     c["redoBtn"].Enabled := st["redo"].Length > 0
+    c["undoBtn"].Redraw(), c["redoBtn"].Redraw()      ; 自绘按钮改字后要重画
 }
 
 CableSortUndoKey(which) {
@@ -1628,19 +1743,18 @@ CableSortShowDetail(st, cable := "") {
         CableSortSetDetail(st, "  其他行：" . text, false)
         return
     }
-    ; 只显示起点 → 终点，深绿粗体加浅绿底，一眼能看到（用户 2026-11-10 要求，编号、规格、芯数都不要）
-    CableSortSetDetail(st, "  起点　" . CableSortDisplay(CableSortStartCell(cable)) . "　　→　　终点　" . CableSortDisplay(CableSortEndCell(cable)), true)
+    ; 编号 + 起点 → 终点，起终点深绿粗体加浅绿底，一眼能看到（2026-11-10 只要起终点；2026-11-11 用户要求加回编号，规格、芯数仍不要）
+    s := CableSortDisplay(CableSortStartCell(cable)), e := CableSortDisplay(CableSortEndCell(cable))
+    CableSortSetDetail(st, "  " . cable["id"] . "　　起点　" . s . "　　→　　终点　" . e, true
+        , [[cable["id"], "1F2329", true], ["    ·    ", "C4C8CF"], ["起点  ", "6B7280"], [s, "166534", true], ["    →    ", "9CA3AF"], ["终点  ", "6B7280"], [e, "166534", true]])
 }
 
-; strong：电缆起终点（浅绿底 #D3EFDC、深绿粗体 #166534）；否则为提示或搜索汇总（浅灰底、灰字）
-CableSortSetDetail(st, text, strong) {
-    d := st["ctl"]["detail"]
-    if (!st.Has("detailStrong") || st["detailStrong"] != strong) {
-        st["detailStrong"] := strong
-        d.Opt("Background" . (strong ? "D3EFDC" : "F7F8FA"))
-        d.SetFont(strong ? "s12 Bold c166534" : "s10 Norm c6B7280")
-    }
-    d.Value := text
+; strong：电缆起终点（浅绿底、深绿粗体 #166534）；否则为提示或搜索汇总（浅灰底、灰字）。
+; 底栏胶囊是 GDI+ 画的位图，st["detailText"] 留一份纯文字（测试和排查用）
+CableSortSetDetail(st, text, strong, runs := "") {
+    st["detailStrong"] := strong, st["detailText"] := text
+    st["detailRuns"] := IsObject(runs) ? runs : [[Trim(text), strong ? "166534" : "6B7280", strong]]
+    CableSortDrawDetail(st)
 }
 
 CableSortLoadMidEditor(st, row) {
@@ -1726,30 +1840,7 @@ CableSortRuleEdit(st, action) {
         st["ctl"]["status"].Value := "规则生效：" . placed . " 根电缆从未分类放进了对应的气泡。"
 }
 
-; 行颜色：colors[i] 为 RGB 或空。col 为 -1 时整行着色，否则只给第 col 列（0 起）着色，其余列用默认字色
-CableSortCustomDraw(colors, lParam, col := -1) {
-    static normal := 0x29231F                        ; 1F2329 的 COLORREF
-    stage := NumGet(lParam, 24, "UInt")
-    if (stage = 1)                                   ; CDDS_PREPAINT
-        return 0x20                                  ; CDRF_NOTIFYITEMDRAW
-    item := NumGet(lParam, 56, "UPtr") + 1
-    color := (item <= colors.Length) ? colors[item] : ""
-    if (stage = 0x10001) {                           ; CDDS_ITEMPREPAINT
-        if (col >= 0)
-            return color != "" ? 0x20 : 0            ; 有颜色才逐列绘制（CDRF_NOTIFYSUBITEMDRAW）
-        if (color != "") {
-            NumPut("UInt", CableSortColorRef(color), lParam, 80)   ; clrText
-            return 2                                 ; CDRF_NEWFONT
-        }
-        return 0
-    }
-    if (stage = 0x30001) {                           ; CDDS_ITEMPREPAINT | CDDS_SUBITEM
-        sub := NumGet(lParam, 88, "Int")             ; iSubItem
-        NumPut("UInt", (sub = col && color != "") ? CableSortColorRef(color) : normal, lParam, 80)
-        return 2
-    }
-    return 0
-}
+; 列表自绘 CableSortCustomDraw 在 cable-sort-look.ahk
 
 ; ---------- 导出 ----------
 
@@ -1831,6 +1922,77 @@ CableSortApply(st) {
         . "。成功后这次任务已用掉，要再导出请重新运行 YSDL3。"
 }
 
+; ---------- 导出预览 ----------
+; 按当前气泡生成导出后的 CSV 内容，用表格显示（不写文件、不连 CAD）。列和插件写出的一致，“至”去掉、首尾空白修剪；
+; 未分类、已删除的不在里面。窗口里可直接点“导出 CSV”（另存模式为“另存 CSV…”）。
+CableSortPreview(st, showOptions := "") {
+    if (st.Has("previewGui") && IsObject(st["previewGui"])) {
+        try st["previewGui"].Destroy()
+        st["previewGui"] := ""
+    }
+    job := st["job"], box := job["mode"] = "box"
+    rows := CableSortExportRows(job, st["bubbles"], true)
+    un := 0, deleted := 0
+    for cable in st["cables"]
+        un += cable["bubble"] = 0, deleted += cable["bubble"] = -1
+    cols := 0
+    for r in rows
+        cols := Max(cols, r.Length)
+    names := box ? ["分类", "序号", "起点", "电缆编号", "芯数", "型号", "起点", "终点"] : ["电缆编号", "芯数", "型号", "起点", "终点"]
+    heads := []
+    loop Max(cols, 1)
+        heads.Push(A_Index <= names.Length ? names[A_Index] : "第 " . A_Index . " 列")
+
+    g := Gui("+Owner" . st["gui"].Hwnd . " +Resize +MinSize640x400", "导出预览 · " . CableSortDwgName(st))
+    st["previewGui"] := g
+    g.BackColor := "FFFFFF"
+    g.SetFont("s12 Bold c1F2329", "Microsoft YaHei UI")
+    title := g.AddText("x16 y12 w600 h26", "导出预览")
+    g.SetFont("s9 Norm c6B7280")
+    sub := g.AddText("x16 y42 w900 h18 +0x4000", "共 " . rows.Length . " 行 · " . st["bubbles"].Length . " 个分类"
+        . (un ? " · 未分类 " . un . " 项不导出" : "") . (deleted ? " · 已删除 " . deleted . " 项不导出" : "")
+        . " · " . (CableSortIsCsv(st) ? "另存为新的 CSV（UTF-8 带 BOM）" : "由中望 CAD 追加写到桌面 CSV")
+        . " · 没有表头，下面的列名只是说明")
+    g.SetFont("s10 Norm c1F2329")
+    lv := g.AddListView("x16 y70 w900 h500 NoSort NoSortHdr -E0x200 +0x4000000", heads)
+    CableSortStyleLv(lv, 28)
+    boldCol := box ? 3 : 0
+    lv.OnNotify(-12, (l, lp) => CableSortCustomDraw([], lp, -1, boldCol, box ? [1, 2] : "", true))
+    apply := CableSortButton(g, "x0 y0 w120 h34", CableSortIsCsv(st) ? "另存 CSV…" : "导出 CSV", "primary")
+    close := CableSortButton(g, "x0 y0 w84 h34", "关闭")
+    lv.Opt("-Redraw")
+    for r in rows
+        lv.Add(, r*)
+    loop heads.Length
+        lv.ModifyCol(A_Index, "AutoHdr")
+    lv.Opt("+Redraw")
+    apply.OnEvent("Click", (*) => (g.Destroy(), st["previewGui"] := "", CableSortApply(st)))
+    close.OnEvent("Click", (*) => (g.Destroy(), st["previewGui"] := ""))
+    g.OnEvent("Close", (*) => (st["previewGui"] := ""))
+    g.OnEvent("Escape", (*) => (g.Destroy(), st["previewGui"] := ""))
+    g.OnEvent("Size", (g2, mm, w, h) => mm != -1 && (
+        title.Move(16, 12, w - 32), sub.Move(16, 42, w - 32),
+        close.Move(w - 16 - 84, h - 12 - 34), apply.Move(w - 16 - 84 - 10 - 120, h - 12 - 34),
+        lv.Move(16, 70, w - 32, h - 70 - 12 - 34 - 12),
+        DllCall("RedrawWindow", "Ptr", g.Hwnd, "Ptr", 0, "Ptr", 0, "UInt", 0x85)))
+    if (showOptions != "") {
+        g.Show(showOptions)
+    } else {
+        wa := CableSortWorkArea(st["gui"].Hwnd)
+        aw := wa[3] - wa[1], ah := wa[4] - wa[2]
+        w := Min(aw, Max(900, Round(aw * 0.7))), h := Min(ah, Max(500, Round(ah * 0.8)))
+        g.Show("w" . w . " h" . h)
+        WinMove(wa[1] + (aw - w) // 2, wa[2] + (ah - h) // 2, , , "ahk_id " . g.Hwnd)
+    }
+    st["previewRows"] := rows                         ; 测试用
+    return g
+}
+
+CableSortDwgName(st) {
+    SplitPath(st["job"]["dwg"], &name)
+    return name
+}
+
 ; ---------- 放大窗口 ----------
 ; 每个气泡可单独放大成一个窗口：默认在屏幕中间，可全屏、可拖边框自己调大小；有自己的搜索框。
 ; 和主窗口共用同一份数据：上下拖动排序、拖到主窗口的气泡或未分类列表、右键菜单都照常可用，改动两边同步。
@@ -1861,19 +2023,20 @@ CableSortZoom(st, i, showOptions := "") {
     g.BackColor := "FFFFFF"
     g.SetFont("s12 Bold c1F2329", "Microsoft YaHei UI")
     z["title"] := g.AddText("x16 y12 w400 h26", "")
-    g.SetFont("s9 Norm c6B7280")
-    z["sub"] := g.AddText("x16 y42 w600 h18", "")
+    g.SetFont("s9 Norm c9CA3AF")
+    z["sub"] := g.AddText("x16 y42 w600 h18 +0x4000", "")
     g.SetFont("s10 Norm c1F2329")
-    z["full"] := g.AddButton("x600 y10 w72 h30", "全屏")
-    z["center"] := g.AddButton("x+6 w72 h30", "居中")
-    z["close"] := g.AddButton("x+6 w72 h30", "关闭")
+    z["full"] := CableSortButton(g, "x600 y10 w72 h32", "全屏")
+    z["center"] := CableSortButton(g, "x+6 w72 h32", "居中")
+    z["close"] := CableSortButton(g, "x+6 w72 h32", "关闭")
     g.SetFont("s9 c9CA3AF")
     z["sclear"] := g.AddText("x0 y0 w18 h18 Center Hidden BackgroundWhite +0x100", "✕")
     g.SetFont("s10 c1F2329")
-    z["search"] := g.AddEdit("x16 y66 w400 +0x4000000")
+    z["search"] := g.AddEdit("x16 y66 w400 h20 -E0x200 +0x4000000")
     DllCall("SendMessage", "Ptr", z["search"].Hwnd, "UInt", 0x1501, "Ptr", 1, "WStr", "搜索编号、柜名或规格，空格分隔多个词…")
-    DllCall("SendMessage", "Ptr", z["search"].Hwnd, "UInt", 0xD3, "Ptr", 2, "Ptr", 22 << 16)
-    z["lv"] := g.AddListView("x16 y100 w800 h500 NoSort NoSortHdr Grid +0x4000000", ["序", "编号", "起点（保留端）", "终点", "规格"])
+    z["frame"] := CableSortFrameEdit(g, z["search"], Chr(0xE721))
+    z["lv"] := g.AddListView("x16 y100 w800 h500 NoSort NoSortHdr -E0x200 +0x4000000", ["序", "编号", "起点（保留端）", "终点", "规格"])
+    CableSortStyleLv(z["lv"], 28)
     z["search"].OnEvent("Change", (*) => z["search"].Value != z["query"] && CableSortZoomSearch(st, z, false))
     z["sclear"].OnEvent("Click", (*) => CableSortZoomSearch(st, z, true))
     z["full"].OnEvent("Click", (*) => CableSortZoomPlace(st, z, "full"))
@@ -1884,7 +2047,7 @@ CableSortZoom(st, i, showOptions := "") {
     g.OnEvent("Escape", (*) => CableSortZoomClose(st, z))
     g.OnEvent("Size", (g2, mm, w, h) => CableSortZoomLayout(z, mm, w, h))
     g.OnEvent("ContextMenu", (g2, ctrl, *) => CableSortZoomContext(st, z, ctrl))
-    z["lv"].OnNotify(-12, (lv, lp) => CableSortCustomDraw(z["colors"], lp))
+    z["lv"].OnNotify(-12, (lv, lp) => CableSortCustomDraw(z["colors"], lp, -1, 1, [0, 4], true))
     z["lv"].OnNotify(-109, (lv, lp) => CableSortBeginDrag(st, lv, z))
     z["lv"].OnNotify(-155, (lv, lp) => CableSortZoomKeyDown(st, z, lp))
     z["lv"].OnEvent("ItemFocus", (lv, row) => CableSortZoomFocus(st, z, row))
@@ -1959,15 +2122,15 @@ CableSortZoomLayout(z, mm, w, h) {
     z["close"].Move(bx, 10), z["center"].Move(bx - 6 - bw, 10), z["full"].Move(bx - 12 - 2 * bw, 10)
     z["title"].Move(16, 12, Max(80, bx - 12 - 2 * bw - 28))
     z["sub"].Move(16, 42, w - 32)
-    sw := Min(480, w - 32)
-    z["search"].Move(16, 66, sw)
-    z["search"].GetPos(, , , &sh)
-    z["sclear"].Move(16 + sw - 22, 66 + (sh - 18) // 2)
+    sw := Min(480, w - 32), sh := 34
+    CableSortPlaceFramed(z["frame"], z["search"], 16, 66, sw, sh, 32)
+    z["sclear"].Move(16 + sw - 28, 66 + (sh - 18) // 2)
     top := 66 + sh + 10
     z["lv"].Move(16, top, w - 32, Max(60, h - top - 12))
     rest := Max(160, w - 32 - 4 - SysGet(2) - 50 - 130 - 110)
     z["lv"].ModifyCol(1, "50 Integer"), z["lv"].ModifyCol(2, 130), z["lv"].ModifyCol(3, rest // 2)
     z["lv"].ModifyCol(4, rest - rest // 2), z["lv"].ModifyCol(5, 110)
+    DllCall("RedrawWindow", "Ptr", z["gui"].Hwnd, "Ptr", 0, "Ptr", 0, "UInt", 0x85)   ; 挪位后整窗重画，免得首次显示留残影
 }
 
 CableSortZoomSearch(st, z, clear) {
@@ -1986,10 +2149,9 @@ CableSortFillZoom(st, z, select := "") {
         CableSortZoomClose(st, z)
         return
     }
-    b := st["bubbles"][i], pal := CableSortPalette(b["id"])
+    b := st["bubbles"][i]
     z["gui"].Title := "放大 · " . b["name"]
-    z["title"].Opt("c" . pal[2])
-    z["title"].Value := "●  " . b["name"]
+    z["title"].Value := b["name"]
     rows := CableSortFilterRows(b["items"], z["query"])
     z["sub"].Value := CableSortBubbleSub(b, rows, z["query"]) . "｜上下拖动排序，可拖到主窗口的其他气泡或未分类列表，右键有更多操作"
     CableSortFillItemsLv(z, b, rows, true, "FFFFFF", select)
