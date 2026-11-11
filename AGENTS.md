@@ -76,4 +76,4 @@
 - 自动化回归测试套件：`tests\merge-split-benchmark.ahk`（合并/拆分 1000 行性能基准与撤销回归）与 `tests\spreadsheet-export-smoke.ahk`（选区信息导出冒烟测试）。
 - 安装或热重载运行 `powershell -ExecutionPolicy Bypass -File .\install.ps1`。
 - 启动项必须是 `excel-command-panel.lnk`，且启动文件夹内不能遗留 `.disabled` 等会被当作启动项的文件；系统自带的 `desktop.ini` 除外。
-- 分享包名为“自动化工具面板”，`python packaging\build-share.py` 默认输出到桌面；桌面只保留最新一个分享包，旧包（含旧名“表格工具面板-*.zip”）由构建脚本移到回收站。改分享包内容后要重新构建，并做隔离安装（`setup.ahk install --root ... --shortcut-root ... --quiet --no-launch`）和 `--self-test` 验证；测试解压用 `Expand-Archive`，MSYS `unzip` 会弄乱中文文件名。
+- 分享包名为“自动化工具面板”，`python packaging\build-share.py` 默认输出到桌面；桌面只保留最新一个分享包，旧包（含旧名“表格工具面板-*.zip”）由构建脚本移到回收站。改分享包内容后要重新构建，并做隔离安装（`setup.ahk install --root ... --shortcut-root ... --quiet --no-launch`）和 `--self-test` 验证；测试解压用 `Expand-Archive`，MSYS `unzip` 会弄乱中文文件名。`build-share.py` 只按 `名称(...) {` 块提取顶层函数，单行 `名称() => 值` 写法不会被带进分享包（2026-11-11 踩坑），`src` 里的顶层函数一律写成块形式。`packaging\share-panel.ahk` 只是模板，不能直接静态检查（会弹 `CablePanelInit` 警告框）；要检查就先用 `build_panel_script()` 拼出脚本，把 `#Warn` 改成 `#Warn All, StdOut` 再加载，避免弹窗打扰用户。

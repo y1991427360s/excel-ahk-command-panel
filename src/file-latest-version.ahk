@@ -295,15 +295,29 @@ LatestVersionSortedIndexes(groups, mode) {
 }
 
 ; ---------- 结果窗口 ----------
-; 界面按 2026-11-10 用户设计稿：蓝色渐变标题栏（自带最小化 / 最大化 / 关闭）、查找范围条、四张统计卡、
-; “全局最新”提示条、搜索 + 类型筛选 + 排序 + 只看多份、文件列表、选中文件的副本卡片、底部按钮。
+; 界面按 2026-11-11 用户设计稿：左侧“第一步 · 先选一个文件”列表，右侧“第二步 · 看图”气泡连线图——
+; 深色中心节点就是这份文件，连线连到每份副本的气泡卡片（卡片标题是所在文件夹），绿色气泡是最新那份，
+; 连线末端写“比最新早多久”，中间一列圆点是从新到旧的时间轴。
 ; 除搜索框（系统 Edit，方便输入中文）外全部用 GDI+ 画进一张位图，点击 / 悬停 / 滚动按坐标自行判断。
 ; 窗口去掉系统标题栏但保留 WS_CAPTION / WS_THICKFRAME：仍可拖动、贴边、缩放、最小化，任务栏有按钮。
 ; 坐标都是 96 DPI 下的逻辑像素，绘制时整体按系统缩放放大。
 
-LatestUiSortLabels() {
-    return ["按文件名", "按文件类型", "按修改时间（新 → 旧）", "按修改时间（旧 → 新）", "按份数（多 → 少）", "按所在文件夹"]
+LatestUiRowH() {
+    return 62
 }
+
+LatestUiHeaderH() {
+    return 52
+}
+
+LatestUiBodyY() {
+    return 152
+}
+
+LatestUiLeftW(W) {
+    return Round(Min(380, Max(300, W * 0.27)))
+}
+
 
 LatestUiStates() {
     static states := Map()
@@ -320,7 +334,7 @@ LatestUiFind(hwnd) {
 }
 
 ShowLatestVersionReport(title, scan) {
-    static prefs := Map("sort", 3, "onlyMulti", true)  ; 排列方式、只看多份在本次运行期间记住
+    static prefs := Map("onlyMulti", true)  ; 只看有多份的：本次运行期间记住
     static hooked := false
     ModernPanelGdiplusStart()
     if !hooked {
@@ -332,17 +346,18 @@ ShowLatestVersionReport(title, scan) {
         hooked := true
     }
 
-    dlg := Gui("+Resize +MinSize900x600 +0x02000000", title)  ; WS_CLIPCHILDREN：画背景时不盖住搜索框
+    dlg := Gui("+Resize +MinSize980x620 +0x02000000", title)  ; WS_CLIPCHILDREN：画背景时不盖住搜索框
     dlg.BackColor := "FFFFFF"
     dlg.MarginX := 0, dlg.MarginY := 0
     dlg.SetFont("s10 c1F2329", "Microsoft YaHei UI")
     search := dlg.AddEdit("x0 y0 w200 h22 -E0x200 -Border")
     DllCall("SendMessage", "Ptr", search.Hwnd, "UInt", 0x1501, "Ptr", 1, "WStr", "搜索文件名或文件夹…")  ; EM_SETCUEBANNER
 
-    st := Map("gui", dlg, "title", title, "prefs", prefs, "search", search, "query", "", "filter", "全部"
-        , "rows", [], "sel", 0, "scroll", 0, "copyScroll", 0, "hover", "", "pressed", "", "hits", []
-        , "dirty", true, "dib", 0, "bmp", 0, "dibW", 0, "dibH", 0, "measure", Map(), "drag", ""
-        , "lastClick", [0, ""], "tracking", false, "searchRect", "")
+    st := Map("gui", dlg, "title", title, "prefs", prefs, "search", search, "query", "", "type", "all"
+        , "rows", [], "sel", 0, "scroll", 0, "graphScroll", 0, "graphMax", 0, "graphStep", 100
+        , "hover", "", "pressed", "", "hits", [], "dirty", true, "dib", 0, "bmp", 0, "dibW", 0, "dibH", 0
+        , "measure", Map(), "drag", "", "lastClick", [0, ""], "tracking", false, "searchRect", ""
+        , "leftW", 340, "cards", Map())
     LatestUiStates()[dlg.Hwnd] := st
     LatestUiSetScan(st, scan)
     LatestUiRefill(st, true)
@@ -357,58 +372,45 @@ ShowLatestVersionReport(title, scan) {
     corner := 2
     try DllCall("dwmapi\DwmSetWindowAttribute", "Ptr", dlg.Hwnd, "UInt", 33, "Int*", corner, "UInt", 4)
     DllCall("SetWindowPos", "Ptr", dlg.Hwnd, "Ptr", 0, "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x37)  ; FRAMECHANGED|NOMOVE|NOSIZE|NOZORDER|NOACTIVATE
-    ; 初始大小：适中即可，能最大化 / 拖大；不再默认铺满屏幕
+    ; 初始大小：适中即可，能最大化 / 拖大
     scale := A_ScreenDPI / 96
     MonitorGetWorkArea(MonitorGetPrimary(), &waL, &waT, &waR, &waB)
-    w := Round(Min(1180 * scale, (waR - waL) * 0.92)), h := Round(Min(820 * scale, (waB - waT) * 0.92))
+    w := Round(Min(1280 * scale, (waR - waL) * 0.94)), h := Round(Min(860 * scale, (waB - waT) * 0.94))
     dlg.Show("Hide")
     WinMove(waL + ((waR - waL) - w) // 2, waT + ((waB - waT) - h) // 2, w, h, dlg.Hwnd)
     dlg.Show()
     DllCall("SetFocus", "Ptr", dlg.Hwnd)
+    return st
 }
 
 LatestUiSetScan(st, scan) {
     groups := scan["groups"]
     st["scan"] := scan
     st["groups"] := groups
-    st["sorted"] := Map()
-    multi := 0, latest := 0, cats := Map()
+    st["sorted"] := ""
+    st["cards"] := Map()
+    multi := 0, latest := 0
     for index, group in groups {
         if (group["copies"].Length > 1)
             multi++
         if (!latest || group["newest"]["time"] > groups[latest]["newest"]["time"])
             latest := index
-        cat := LatestVersionCategory(group["newest"]["name"])
-        cats[cat[1]] := cat[2]
     }
     st["multi"] := multi
     st["latest"] := latest
-    st["cats"] := ["全部"]
-    for _, name in cats  ; Map 按键（排序序号）升序枚举
-        st["cats"].Push(name)
-    if !LatestUiHas(st["cats"], st["filter"])
-        st["filter"] := "全部"
 }
 
-LatestUiHas(list, value) {
-    for _, item in list
-        if (item = value)
-            return true
-    return false
-}
-
-; 按当前排序、筛选、搜索重排列表。first 为真时默认选中全局最新那份。
+; 按文件名排序，再按文件类型、只看多份、搜索过滤列表。first 为真时默认选中全局最新那份（并滚动到可见）。
 LatestUiRefill(st, first := false) {
-    mode := st["prefs"]["sort"]
-    if !st["sorted"].Has(mode)
-        st["sorted"][mode] := LatestVersionSortedIndexes(st["groups"], mode)
+    if !IsObject(st["sorted"])
+        st["sorted"] := LatestVersionSortedIndexes(st["groups"], 1)  ; 按文件名（数字按大小，D0202 在 D0210 前）；2026-11-11 用户要求
     query := StrLower(Trim(st["query"]))
     rows := []
-    for _, index in st["sorted"][mode] {
+    for _, index in st["sorted"] {
         group := st["groups"][index]
         if (st["prefs"]["onlyMulti"] && group["copies"].Length < 2)
             continue
-        if (st["filter"] != "全部" && LatestVersionCategory(group["newest"]["name"])[2] != st["filter"])
+        if (st["type"] != "all" && LatestUiTypeOf(group["newest"]["name"]) != st["type"])
             continue
         if (query != "" && !InStr(StrLower(group["newest"]["name"]), query)
                 && !InStr(StrLower(LatestVersionNewestFolders(group)), query))
@@ -417,13 +419,15 @@ LatestUiRefill(st, first := false) {
     }
     st["rows"] := rows
     want := first ? st["latest"] : st["sel"]
+    old := st["sel"]
     st["sel"] := 0
     for _, index in rows
         if (index = want)
             st["sel"] := want
     if (!st["sel"] && rows.Length)
         st["sel"] := rows[1]
-    st["copyScroll"] := 0
+    if (st["sel"] != old)
+        st["graphScroll"] := 0
     st["scroll"] := first ? st["scroll"] : 0
     LatestUiInvalidate(st)
     if first
@@ -446,6 +450,7 @@ LatestUiClose(st) {
     if st.Has("mg") {
         DllCall("gdiplus\GdipDeleteGraphics", "Ptr", st["mg"])
         DllCall("gdiplus\GdipDisposeImage", "Ptr", st["mgBmp"])
+        st.Delete("mg")
     }
     try st["gui"].Destroy()
 }
@@ -484,7 +489,7 @@ LatestUiReveal(st, path) {
 
 LatestUiLocateSelected(st) {
     if !st["sel"] {
-        ToolTip("请先在列表里选中一行")
+        ToolTip("请先在左侧列表里选一个文件")
         SetTimer(() => ToolTip(), -1500)
         return
     }
@@ -504,28 +509,11 @@ LatestUiCopyResult(st) {
     SetTimer(() => ToolTip(), -1800)
 }
 
-LatestUiSortMenu(st, x, y) {
-    sortMenu := Menu()
-    for index, label in LatestUiSortLabels() {
-        sortMenu.Add(label, LatestUiSortPick.Bind(st, index))
-        if (index = st["prefs"]["sort"])
-            sortMenu.Check(label)
-    }
-    scale := A_ScreenDPI / 96
-    sortMenu.Show(Round(x * scale), Round(y * scale))
-}
-
-LatestUiSortPick(st, index, *) {
-    st["prefs"]["sort"] := index
-    LatestUiRefill(st)
-    LatestUiEnsureVisible(st)
-}
-
 LatestUiSelect(st, index) {
     if (index = st["sel"])
         return
     st["sel"] := index
-    st["copyScroll"] := 0
+    st["graphScroll"] := 0
     LatestUiEnsureVisible(st)
     LatestUiInvalidate(st)
 }
@@ -546,7 +534,7 @@ LatestUiMoveSel(st, delta) {
 LatestUiEnsureVisible(st) {
     if !st.Has("listArea") || !st["sel"]
         return
-    area := st["listArea"], rowH := 36
+    area := st["listArea"], rowH := LatestUiRowH()
     for i, index in st["rows"] {
         if (index != st["sel"])
             continue
@@ -562,8 +550,69 @@ LatestUiEnsureVisible(st) {
 LatestUiClampScroll(st) {
     if !st.Has("listArea")
         return
-    maxScroll := Max(0, st["rows"].Length * 36 - st["listArea"][4])
+    maxScroll := Max(0, st["rows"].Length * LatestUiRowH() - st["listArea"][4])
     st["scroll"] := Round(Max(0, Min(maxScroll, st["scroll"])))
+}
+
+; 选中组每份副本的气泡文字：标题（所在文件夹名）、上级文件夹、完整相对路径。按组缓存。
+LatestUiCards(st, index) {
+    if st["cards"].Has(index)
+        return st["cards"][index]
+    group := st["groups"][index], root := st["scan"]["root"]
+    SplitPath(root, &rootName)
+    infos := [], counts := Map()
+    for _, copy in group["copies"] {
+        SplitPath(copy["rel"], , &dir)
+        parts := dir = "" ? [] : StrSplit(dir, "\")
+        name := parts.Length ? parts[parts.Length] : (rootName != "" ? rootName : "查找范围") . "（顶层）"
+        parent := parts.Length >= 2 ? parts[parts.Length - 1] : (parts.Length = 1 && rootName != "" ? rootName : "")
+        key := StrLower(name)
+        counts[key] := (counts.Has(key) ? counts[key] : 0) + 1
+        infos.Push(Map("title", name, "key", key, "parent", parent
+            , "dir", dir = "" ? "查找范围顶层" : StrReplace(dir, "\", " \ ")))
+    }
+    seen := Map()
+    for _, info in infos {
+        info["ambiguous"] := counts[info["key"]] > 1
+        if seen.Has(info["key"])
+            info["title"] .= "（另一处）"
+        seen[info["key"]] := true
+    }
+    st["cards"][index] := infos
+    return infos
+}
+
+; 连线末端的标签：[文字, 字色, 加粗]
+LatestUiCurveLabel(group, i) {
+    copy := group["copies"][i], newest := group["newest"]
+    if (i = 1)
+        return ["★ 最新那份", "166534", true]
+    if (copy["time"] = newest["time"])
+        return copy["size"] = newest["size"] ? ["与最新相同", "3F7D58", false] : ["时间相同、大小不同，需核对", "B42318", true]
+    return ["早 " . LatestVersionAge(newest["time"], copy["time"]), "6B7280", false]
+}
+
+; 搜索框下方的文件类型按钮（2026-11-11 设计稿）：按最新那份的扩展名归类
+LatestUiTypes() {
+    return [["all", "全部"], ["dwg", "DWG"], ["pdf", "PDF"], ["excel", "Excel"], ["other", "其他"]]
+}
+
+LatestUiTypeOf(name) {
+    SplitPath(name, , , &ext)
+    ext := StrLower(ext)
+    if (ext = "dwg" || ext = "dxf")
+        return "dwg"
+    if (ext = "pdf")
+        return "pdf"
+    if (ext = "xls" || ext = "xlsx" || ext = "xlsm" || ext = "xlsb" || ext = "et" || ext = "csv")
+        return "excel"
+    return "other"
+}
+
+LatestUiExtLabel(name) {
+    SplitPath(name, , , &ext)
+    ext := StrUpper(ext)
+    return ext = "" ? "FILE" : StrLen(ext) > 4 ? SubStr(ext, 1, 4) : ext
 }
 
 ; ---------- 绘制工具 ----------
@@ -584,22 +633,22 @@ LatestUiFont(size, bold := false, family := "Microsoft YaHei UI") {
     return font
 }
 
-; align：0 左 1 中 2 右；trim：3 末尾省略号，5 路径中间省略（保留开头和文件夹名末尾）
-LatestUiFormat(align, trim) {
+; align：0 左 1 中 2 右；trim：3 末尾省略号，5 路径中间省略（保留开头和文件夹名末尾）；wrap：自动换行、顶端对齐
+LatestUiFormat(align, trim, wrap := false) {
     static formats := Map()
-    key := align . "|" . trim
+    key := align . "|" . trim . "|" . wrap
     if formats.Has(key)
         return formats[key]
     fmt := 0
-    DllCall("gdiplus\GdipCreateStringFormat", "Int", 0x1000, "Int", 0, "Ptr*", &fmt)  ; NoWrap
+    DllCall("gdiplus\GdipCreateStringFormat", "Int", wrap ? 0 : 0x1000, "Int", 0, "Ptr*", &fmt)  ; NoWrap
     DllCall("gdiplus\GdipSetStringFormatAlign", "Ptr", fmt, "Int", align)
-    DllCall("gdiplus\GdipSetStringFormatLineAlign", "Ptr", fmt, "Int", 1)
+    DllCall("gdiplus\GdipSetStringFormatLineAlign", "Ptr", fmt, "Int", wrap ? 0 : 1)
     DllCall("gdiplus\GdipSetStringFormatTrimming", "Ptr", fmt, "Int", trim)
     formats[key] := fmt
-    return fmt
+    return formats[key]
 }
 
-LatestUiText(g, text, x, y, w, h, size, color, bold := false, align := 0, trim := 3, family := "Microsoft YaHei UI") {
+LatestUiText(g, text, x, y, w, h, size, color, bold := false, align := 0, trim := 3, family := "Microsoft YaHei UI", wrap := false) {
     text := String(text)
     if (text = "" || w <= 2)
         return
@@ -608,7 +657,7 @@ LatestUiText(g, text, x, y, w, h, size, color, bold := false, align := 0, trim :
     rect := Buffer(16)
     NumPut("Float", x, "Float", y, "Float", w, "Float", h, rect)
     DllCall("gdiplus\GdipDrawString", "Ptr", g, "WStr", text, "Int", -1, "Ptr", LatestUiFont(size, bold, family)
-        , "Ptr", rect, "Ptr", LatestUiFormat(align, trim), "Ptr", brush)
+        , "Ptr", rect, "Ptr", LatestUiFormat(align, trim, wrap), "Ptr", brush)
     DllCall("gdiplus\GdipDeleteBrush", "Ptr", brush)
 }
 
@@ -616,7 +665,7 @@ LatestUiGlyph(g, glyph, x, y, w, h, size, color) {
     LatestUiText(g, glyph, x, y, w, h, size, color, false, 1, 0, "Segoe MDL2 Assets")
 }
 
-LatestUiRect(g, x, y, w, h, fill, radius := 0, border := "") {
+LatestUiRect(g, x, y, w, h, fill, radius := 0, border := "", penW := 1) {
     if (w <= 0 || h <= 0)
         return
     if (radius = 0 && border = "") {
@@ -626,16 +675,34 @@ LatestUiRect(g, x, y, w, h, fill, radius := 0, border := "") {
         DllCall("gdiplus\GdipDeleteBrush", "Ptr", brush)
         return
     }
-    path := ModernPanelRoundPath(x + 0.5, y + 0.5, w - 1, h - 1, radius)
+    inset := penW / 2
+    path := ModernPanelRoundPath(x + inset, y + inset, w - penW, h - penW, radius)
     if (fill != "")
         ModernPanelFillPath(g, path, ModernPanelArgb(fill))
     if (border != "") {
         pen := 0
-        DllCall("gdiplus\GdipCreatePen1", "UInt", ModernPanelArgb(border), "Float", 1, "Int", 0, "Ptr*", &pen)
+        DllCall("gdiplus\GdipCreatePen1", "UInt", ModernPanelArgb(border), "Float", penW, "Int", 0, "Ptr*", &pen)
         DllCall("gdiplus\GdipDrawPath", "Ptr", g, "Ptr", pen, "Ptr", path)
         DllCall("gdiplus\GdipDeletePen", "Ptr", pen)
     }
     DllCall("gdiplus\GdipDeletePath", "Ptr", path)
+}
+
+LatestUiDot(g, cx, cy, r, color) {
+    brush := 0
+    DllCall("gdiplus\GdipCreateSolidFill", "UInt", ModernPanelArgb(color), "Ptr*", &brush)
+    DllCall("gdiplus\GdipFillEllipse", "Ptr", g, "Ptr", brush, "Float", cx - r, "Float", cy - r, "Float", r * 2, "Float", r * 2)
+    DllCall("gdiplus\GdipDeleteBrush", "Ptr", brush)
+}
+
+; 中心节点到气泡的连线：水平出、水平进的三次贝塞尔曲线
+LatestUiCurve(g, x1, y1, x2, y2, color, width) {
+    pen := 0
+    DllCall("gdiplus\GdipCreatePen1", "UInt", ModernPanelArgb(color), "Float", width, "Int", 0, "Ptr*", &pen)
+    dx := (x2 - x1) * 0.5
+    DllCall("gdiplus\GdipDrawBezier", "Ptr", g, "Ptr", pen, "Float", x1, "Float", y1, "Float", x1 + dx, "Float", y1
+        , "Float", x2 - dx, "Float", y2, "Float", x2, "Float", y2)
+    DllCall("gdiplus\GdipDeletePen", "Ptr", pen)
 }
 
 ; 文字宽度（逻辑像素），结果缓存
@@ -674,22 +741,14 @@ LatestUiHitAt(st, x, y) {
     return ""
 }
 
-; 列表“状态”列：[文字, 底色（空为不画底）, 字色]。只有“全局最新”用绿色徽标，其余用灰字，避免满屏彩色。
+; 列表第二行只写份数；“全局最新”“含旧版”等标签 2026-11-11 用户要求去掉（两者含义不同却挤在同一位置，容易看糊涂）。
+; 只保留红字“需核对”：修改时间相同、大小却不同，光看时间判断不了哪份是最新。
 LatestUiStatusBadge(st, index) {
-    group := st["groups"][index]
-    if (index = st["latest"])
-        return ["★ 全局最新", "D3EFDC", "166534"]
-    if (group["copies"].Length = 1)
-        return ["只有 1 份", "", "9CA3AF"]
-    if group["clash"]
-        return ["需核对", "", "B42318"]
-    if group["older"]
-        return ["含旧版", "", "6B7280"]
-    return ["副本相同", "", "6B7280"]
+    return st["groups"][index]["clash"] ? ["需核对", "B42318", true] : ""
 }
 
-LatestUiShortTime(time) {
-    return SubStr(time, 1, 4) = A_YYYY ? FormatTime(time, "MM-dd HH:mm") : FormatTime(time, "yyyy-MM-dd")
+LatestUiShortDate(time) {
+    return SubStr(time, 1, 4) = A_YYYY ? FormatTime(time, "MM-dd") : FormatTime(time, "yyyy-MM-dd")
 }
 
 ; ---------- 绘制 ----------
@@ -717,174 +776,148 @@ LatestUiRender(st, pw, ph) {
     DllCall("gdiplus\GdipGraphicsClear", "Ptr", g, "UInt", ModernPanelArgb("FFFFFF"))
     st["hits"] := []
     W := pw / scale, H := ph / scale
-    pad := 18, cw := W - pad * 2
+    headH := LatestUiHeaderH(), bodyY := LatestUiBodyY()
     LatestUiDrawHeader(st, g, W)
-    y := 48 + 14
-    LatestUiDrawScope(st, g, pad, y, cw, 40)
-    y += 40 + 6
-    LatestUiDrawSummary(st, g, pad, y, cw, 26)
-    y += 26 + 8
-    y += LatestUiDrawToolbar(st, g, pad, y, cw, 34) + 12
-    footerY := H - 14 - 34
-    ; 副本区高度只随窗口变化，不随选中行变化，切换时列表不跳动
-    avail := footerY - 12 - y
-    copyRows := Max(2, Min(6, Floor((avail * 0.42 - 40) / 34)))
-    detailH := 40 + copyRows * 34 + 6
-    detailY := footerY - 12 - detailH
-    LatestUiDrawList(st, g, pad, y, cw, Max(110, detailY - 12 - y))
-    LatestUiDrawDetail(st, g, pad, detailY, cw, detailH)
-    LatestUiDrawFooter(st, g, pad, footerY, cw, 34)
+    LatestUiDrawScope(st, g, 0, headH, W, 56)
+    LatestUiDrawSummary(st, g, 0, headH + 56, W, bodyY - headH - 56)
+    leftW := LatestUiLeftW(W)
+    st["leftW"] := leftW
+    LatestUiRect(g, leftW, bodyY, 1, H - bodyY, "E4E6EB")
+    LatestUiDrawList(st, g, 0, bodyY, leftW, H - bodyY)
+    LatestUiDrawGraphPane(st, g, leftW + 1, bodyY, W - leftW - 1, H - bodyY)
     DllCall("gdiplus\GdipDeleteGraphics", "Ptr", g)
     st["dirty"] := false
 }
 
 LatestUiDrawHeader(st, g, W) {
-    LatestUiRect(g, 0, 0, W, 48, "F7F8FA")
-    LatestUiRect(g, 0, 47, W, 1, "E4E6EB")
-    LatestUiRect(g, 16, 9, 30, 30, "ECEEF1", 8, "E1E4EA")
-    LatestUiGlyph(g, Chr(0xE721), 16, 9, 30, 30, 11, "374151")
-    tw := LatestUiMeasure(st, st["title"], 12.5, true)
-    LatestUiText(g, st["title"], 56, 0, tw + 4, 48, 12.5, "1F2329", true)
-    LatestUiText(g, "同名文件自动归组 · 按修改时间判定最新", 56 + tw + 12, 1, W - 56 - tw - 12 - 160, 48, 9.5, "6B7280")
+    headH := LatestUiHeaderH()
+    LatestUiRect(g, 0, 0, W, headH, "F7F8FA")
+    LatestUiRect(g, 0, headH - 1, W, 1, "E4E6EB")
+    LatestUiGlyph(g, Chr(0xE721), 14, 0, 30, headH, 13, "374151")
+    tw := LatestUiMeasure(st, st["title"], 13, true)
+    LatestUiText(g, st["title"], 46, 0, tw + 4, headH, 13, "1F2329", true)
+    LatestUiText(g, "同名文件自动归组 · 按修改时间判定最新", 46 + tw + 14, 1, W - 46 - tw - 14 - 160, headH, 9.5, "6B7280")
     maxed := DllCall("IsZoomed", "Ptr", st["gui"].Hwnd)
     for i, item in [["min", Chr(0xE921)], ["max", Chr(maxed ? 0xE923 : 0xE922)], ["close", Chr(0xE8BB)]] {
         bx := W - (4 - i) * 46
         hot := st["hover"] = item[1]
         if hot
-            LatestUiRect(g, bx, 0, 46, 47, item[1] = "close" ? "E81123" : "E9EBEF")
-        LatestUiGlyph(g, item[2], bx, 0, 46, 47, 7.5, hot && item[1] = "close" ? "FFFFFF" : "4B5563")
-        LatestUiHit(st, item[1], bx, 0, 46, 47, false)
+            LatestUiRect(g, bx, 0, 46, headH - 1, item[1] = "close" ? "E81123" : "E9EBEF")
+        LatestUiGlyph(g, item[2], bx, 0, 46, headH - 1, 7.5, hot && item[1] = "close" ? "FFFFFF" : "6B7280")
+        LatestUiHit(st, item[1], bx, 0, 46, headH - 1, false)
     }
 }
 
 LatestUiDrawScope(st, g, x, y, w, h) {
     scan := st["scan"]
-    LatestUiRect(g, x, y, w, h, "FFFFFF", 8, "E4E6EB")
-    LatestUiGlyph(g, Chr(0xE8B7), x + 12, y, 22, h, 11, "9CA3AF")
-    labelW := LatestUiMeasure(st, "查找范围", 9.5)
-    LatestUiText(g, "查找范围", x + 40, y, labelW + 2, h, 9.5, "6B7280")
-    ; 右侧：重新扫描按钮、扫描信息
-    bw := 96, bx := x + w - 6 - bw
-    LatestUiRect(g, bx, y + 5, bw, h - 10, st["hover"] = "rescan" ? "E9EBEF" : "F3F4F6", 7, "E1E4EA")
-    LatestUiGlyph(g, Chr(0xE72C), bx + 10, y + 5, 18, h - 10, 9, "374151")
-    LatestUiText(g, "重新扫描", bx + 30, y + 5, bw - 34, h - 10, 9.5, "1F2329", true)
-    LatestUiHit(st, "rescan", bx, y + 5, bw, h - 10)
+    LatestUiRect(g, x, y + h - 1, w, 1, "ECEEF1")
+    labelW := LatestUiMeasure(st, "查找范围", 10)
+    LatestUiText(g, "查找范围", x + 20, y, labelW + 2, h, 10, "6B7280")
+    ; 右侧：深色“重新扫描”按钮、扫描信息
+    bw := 94, bh := 34, bx := x + w - 20 - bw, by := y + (h - bh) / 2
+    LatestUiRect(g, bx, by, bw, bh, st["hover"] = "rescan" ? "1F2329" : "2B3038", 7)
+    LatestUiText(g, "重新扫描", bx, by, bw, bh, 10, "FFFFFF", true, 1)
+    LatestUiHit(st, "rescan", bx, by, bw, bh)
     info := "扫描完成"
     if scan.Has("elapsed")
         info .= " · 用时 " . Format("{:.1f}", scan["elapsed"] / 1000) . " 秒"
-    infoColor := "3F7D58", dotColor := "4CAF73"
+    infoColor := "1F2329", dotColor := "2F9E5B"
     if scan["truncated"]
         info := "文件太多，只比较了前 " . scan["limit"] . " 个", infoColor := "B45309", dotColor := "D97706"
-    iw := LatestUiMeasure(st, info, 9)
-    ix := bx - 14 - iw
-    LatestUiRect(g, ix - 10, y + h / 2 - 3, 6, 6, dotColor, 3)
-    LatestUiText(g, info, ix, y, iw + 2, h, 9, infoColor)
+    iw := LatestUiMeasure(st, info, 10)
+    ix := bx - 20 - iw
+    LatestUiDot(g, ix - 10, y + h / 2, 4, dotColor)
+    LatestUiText(g, info, ix, y, iw + 2, h, 10, infoColor)
     ; 中间：路径 + “含子文件夹”
     root := scan["root"] != "" ? scan["root"] : "选中的文件"
     chip := scan["folders"] ? "含子文件夹" : ""
-    chipW := chip != "" ? LatestUiMeasure(st, chip, 8.5) + 18 : 0
-    px := x + 40 + labelW + 10
-    pathW := Min(LatestUiMeasure(st, root, 10, true) + 2, ix - 24 - px - chipW - 8)
-    LatestUiText(g, root, px, y, pathW, h, 10, "1F2329", true, 0, 5)
+    chipW := chip != "" ? LatestUiMeasure(st, chip, 9) + 20 : 0
+    px := x + 20 + labelW + 10
+    pathW := Min(LatestUiMeasure(st, root, 10.5, true) + 2, ix - 30 - px - chipW - 10)
+    LatestUiText(g, root, px, y, pathW, h, 10.5, "1F2329", true, 0, 5)
     if (chip != "") {
-        LatestUiRect(g, px + pathW + 8, y + 9, chipW, h - 18, "F3F4F6", 11, "E1E4EA")
-        LatestUiText(g, chip, px + pathW + 8, y + 9, chipW, h - 18, 8.5, "4B5563", false, 1)
+        LatestUiRect(g, px + pathW + 10, y + (h - 24) / 2, chipW, 24, "F1F3F6", 6)
+        LatestUiText(g, chip, px + pathW + 10, y + (h - 24) / 2, chipW, 24, 9, "4B5563", false, 1)
     }
 }
 
 ; 统计一行字：数字加粗，其余灰色；右侧是同名判定规则
 LatestUiDrawSummary(st, g, x, y, w, h) {
     scan := st["scan"]
+    LatestUiRect(g, x, y + h - 1, w, 1, "E4E6EB")
     items := [["共", scan["files"], "个文件"], ["", st["groups"].Length, "组"], ["", st["multi"], "组有多份副本"]
         , ["已忽略", scan["skipped"], "个备份 / 临时文件"]]
-    cx := x + 4
+    cx := x + 20
     for i, item in items {
         if (i > 1) {
-            LatestUiText(g, "·", cx + 6, y, 10, h, 9.5, "C4C8CF", false, 1)
-            cx += 22
+            LatestUiText(g, "·", cx + 8, y, 10, h, 10, "C4C8CF", false, 1)
+            cx += 26
         }
         for j, part in item {
             if (part = "")
                 continue
             bold := j = 2
-            pw := LatestUiMeasure(st, part, 9.5, bold)
-            LatestUiText(g, part, cx, y, pw + 2, h, 9.5, bold ? "1F2329" : "6B7280", bold)
-            cx += pw + 3
+            pw := LatestUiMeasure(st, part, bold ? 10.5 : 10, bold)
+            LatestUiText(g, part, cx, y, pw + 2, h, bold ? 10.5 : 10, bold ? "1F2329" : "4B5563", bold)
+            cx += pw + 4
         }
     }
     rule := "同名判定已忽略「- 副本」「(1)」「v2」、日期、「最终版」等后缀"
-    rw := Min(LatestUiMeasure(st, rule, 9) + 2, x + w - cx - 24)
-    LatestUiText(g, rule, x + w - rw, y, rw, h, 9, "9CA3AF")
+    rw := Min(LatestUiMeasure(st, rule, 9) + 2, x + w - 20 - cx - 24)
+    LatestUiText(g, rule, x + w - 20 - rw, y, rw, h, 9, "9CA3AF")
 }
 
-LatestUiDrawToolbar(st, g, x, y, w, h) {
-    ; 右侧：只看有多份的
-    label := "只看有多份的"
-    lw := LatestUiMeasure(st, label, 9.5)
-    on := st["prefs"]["onlyMulti"]
-    lx := x + w - lw, sx := lx - 8 - 36
-    LatestUiRect(g, sx, y + (h - 20) / 2, 36, 20, on ? "2B3038" : "D1D5DB", 10)
-    LatestUiRect(g, on ? sx + 18 : sx + 2, y + (h - 20) / 2 + 2, 16, 16, "FFFFFF", 8)
-    LatestUiText(g, label, lx, y, lw + 2, h, 9.5, "1F2329")
-    LatestUiHit(st, "toggle", sx, y, x + w - sx, h)
-    ; 排序框、类型分段宽度
-    sortLabel := LatestUiSortLabels()[st["prefs"]["sort"]]
-    sw1 := LatestUiMeasure(st, "排序", 9.5), sw2 := LatestUiMeasure(st, sortLabel, 9.5)
-    sortW := 12 + sw1 + 8 + sw2 + 30
-    segWs := [], segTotal := 6
-    for _, cat in st["cats"] {
-        segWs.Push(LatestUiMeasure(st, cat, 9.5, true) + 26)
-        segTotal += segWs[segWs.Length]
-    }
-    ; 宽度不够时折成两行：第一行搜索 + 只看多份，第二行类型筛选 + 排序
-    twoRows := sx - 20 - x - 12 - segTotal - 12 - sortW < 200
-    searchW := twoRows ? Min(420, sx - 20 - x) : Min(320, sx - 20 - x - 12 - segTotal - 12 - sortW)
+; 左栏：搜索框、“第一步”说明、文件列表、底部“只看有多份的”开关
+LatestUiDrawList(st, g, x, y, w, h) {
+    rowH := LatestUiRowH(), pad := 14
     ; 搜索框（系统 Edit 叠在画好的框上）
+    sx := x + pad, sy := y + 14, sw := w - pad * 2, sh := 36
     focused := DllCall("GetFocus", "Ptr") = st["search"].Hwnd
-    LatestUiRect(g, x, y, searchW, h, "FFFFFF", 8, focused ? "9CA3AF" : "DCDFE4")
-    LatestUiGlyph(g, Chr(0xE721), x + 6, y, 24, h, 9.5, "6B7280")
-    LatestUiHit(st, "search", x, y, searchW, h, false)
-    rect := [x + 32, y + (h - 22) / 2, searchW - 40, 22]
+    LatestUiRect(g, sx, sy, sw, sh, "FFFFFF", 6, focused ? "9CA3AF" : "DCDFE4")
+    LatestUiGlyph(g, Chr(0xE721), sx + 6, sy, 22, sh, 8.5, "9CA3AF")
+    LatestUiHit(st, "search", sx, sy, sw, sh, false)
+    rect := [sx + 30, sy + (sh - 22) / 2, sw - 38, 22]
     if (st["searchRect"] = "" || st["searchRect"][1] != rect[1] || st["searchRect"][2] != rect[2] || st["searchRect"][3] != rect[3]) {
         st["searchRect"] := rect
         st["search"].Move(Round(rect[1]), Round(rect[2]), Round(rect[3]), rect[4])
     }
-    ; 类型分段
-    segX := x + searchW + 12
-    if twoRows
-        segX := x, y += h + 8
-    LatestUiRect(g, segX, y, segTotal, h, "F1F3F6", 8)
-    cx := segX + 3
-    for i, cat in st["cats"] {
-        selected := cat = st["filter"]
-        if selected
-            LatestUiRect(g, cx, y + 3, segWs[i], h - 6, "FFFFFF", 6, "E1E4EA")
-        else if (st["hover"] = "seg:" . i)
-            LatestUiRect(g, cx, y + 3, segWs[i], h - 6, "E9EBEF", 6)
-        LatestUiText(g, cat, cx, y + 3, segWs[i], h - 6, 9.5, selected ? "1F2329" : "6B7280", selected, 1)
-        LatestUiHit(st, "seg:" . i, cx, y + 3, segWs[i], h - 6)
-        cx += segWs[i]
-    }
-    ; 排序
-    sortX := segX + segTotal + 12
-    LatestUiRect(g, sortX, y, sortW, h, st["hover"] = "sort" ? "F7F8FA" : "FFFFFF", 8, "DCDFE4")
-    LatestUiText(g, "排序", sortX + 12, y, sw1 + 2, h, 9.5, "9CA3AF")
-    LatestUiText(g, sortLabel, sortX + 12 + sw1 + 8, y, sw2 + 2, h, 9.5, "1F2329")
-    LatestUiGlyph(g, Chr(0xE70D), sortX + sortW - 26, y, 18, h, 7.5, "6B7280")
-    LatestUiHit(st, "sort", sortX, y, sortW, h)
-    st["sortAnchor"] := [sortX, y + h + 4]
-    return twoRows ? h * 2 + 8 : h
-}
-
-LatestUiDrawList(st, g, x, y, w, h) {
-    rowH := 36, headH := 36
-    LatestUiRect(g, x, y, w, h, "FFFFFF", 8, "E4E6EB")
-    LatestUiRect(g, x + 1, y + 1, w - 2, headH - 1, "F7F8FA", 7)
-    LatestUiRect(g, x + 1, y + 10, w - 2, headH - 10, "F7F8FA")
-    LatestUiRect(g, x + 1, y + headH, w - 2, 1, "ECEEF1")
-    area := [x + 1, y + headH + 1, w - 2, h - headH - 2]
-    st["listArea"] := area
     rows := st["rows"]
+    ; 文件类型按钮：选中深灰底白字，其余浅灰底
+    cx := sx, cy := sy + sh + 12, chipH := 24, types := LatestUiTypes(), textW := 0
+    for _, t in types
+        textW += LatestUiMeasure(st, t[2], 9, true)
+    chipPad := Max(8, Min(20, (sw - textW - 6 * (types.Length - 1)) / types.Length))  ; 窄窗口时收紧，五个都放得下
+    for _, t in types {
+        cid := "type:" . t[1], on := st["type"] = t[1]
+        cw := LatestUiMeasure(st, t[2], 9, on) + chipPad
+        if (cx + cw > sx + sw + 1)
+            break
+        LatestUiRect(g, cx, cy, cw, chipH, on ? "2B3038" : st["hover"] = cid ? "E5E7EB" : "F1F3F6", 5)
+        LatestUiText(g, t[2], cx, cy, cw, chipH, 9, on ? "FFFFFF" : "4B5563", on, 1)
+        LatestUiHit(st, cid, cx, cy, cw, chipH)
+        cx += cw + 6
+    }
+    sy += chipH + 12
+    LatestUiText(g, "第一步 · 先选一个文件（共 " . rows.Length . " 组）", x + pad + 2, sy + sh + 6, w - pad * 2, 26, 9, "9CA3AF")
+    ; 底部开关
+    footH := 62, fy := y + h - footH
+    on := st["prefs"]["onlyMulti"]
+    lw := LatestUiMeasure(st, "只看有多份的：", 9)
+    LatestUiText(g, "只看有多份的：", x + pad + 2, fy + 6, lw + 2, 22, 9, "6B7280")
+    tx := x + pad + 2 + lw
+    tw := LatestUiMeasure(st, on ? "开" : "关", 9, true)
+    LatestUiText(g, on ? "开" : "关", tx, fy + 6, tw + 2, 22, 9, st["hover"] = "toggle" ? "1F2329" : "374151", true)
+    LatestUiRect(g, tx, fy + 25, tw + 1, 1, st["hover"] = "toggle" ? "1F2329" : "9CA3AF")
+    LatestUiHit(st, "toggle", x + pad, fy + 4, lw + tw + 8, 26)
+    hidden := st["groups"].Length - st["multi"]
+    hint := on ? (hidden ? "已隐藏 " . hidden . " 组只有 1 份的文件，" : "") . "点任意一组即看气泡图"
+        : "正在显示全部 " . st["groups"].Length . " 组，点任意一组即看气泡图"
+    LatestUiText(g, hint, x + pad + 2, fy + 28, w - pad * 2, 24, 9, "9CA3AF")
+    ; 列表
+    listY := sy + sh + 36
+    LatestUiRect(g, x, listY - 1, w, 1, "ECEEF1")
+    area := [x, listY, w, fy - listY - 4]
+    st["listArea"] := area
     if st.Has("ensureSel") {
         st.Delete("ensureSel")
         LatestUiEnsureVisible(st)
@@ -892,55 +925,39 @@ LatestUiDrawList(st, g, x, y, w, h) {
     LatestUiClampScroll(st)
     contentH := rows.Length * rowH
     showBar := contentH > area[4]
-    ; 列：类型+文件名 | 所在文件夹 | 修改时间 | 份数 | 状态 | 箭头
-    x0 := x + 16, right := x + w - 14 - (showBar ? 8 : 0)
-    chevW := 16, statusW := 112, countW := 56, timeW := 110
-    flex := right - chevW - statusW - countW - timeW - x0
-    nameW := Round(flex * 0.56), folderW := flex - nameW
-    folderX := x0 + nameW, timeX := folderX + folderW, countX := timeX + timeW, statusX := countX + countW, chevX := statusX + statusW
-    for _, col in [["文件名（最新那份）", x0, nameW, 0], ["最新副本所在文件夹", folderX + 12, folderW - 12, 0]
-            , ["修改时间", timeX, timeW, 0], ["份数", countX, countW, 1], ["状态", statusX + 4, statusW, 0]]
-        LatestUiText(g, col[1], col[2], y, col[3], headH, 9, "6B7280", false, col[4])
     if !rows.Length {
-        LatestUiText(g, "没有符合条件的文件" . (st["prefs"]["onlyMulti"] ? "（可以关掉右上角“只看有多份的”）" : "")
-            , area[1], area[2], area[3], Min(area[4], 120), 10, "9CA3AF", false, 1)
+        LatestUiText(g, (st["query"] != "" || st["type"] != "all") ? "没有找到匹配的文件" : "没有同名的多份文件" . (on ? "（可以关掉下方“只看有多份的”）" : "")
+            , area[1] + pad, area[2] + 20, area[3] - pad * 2, 60, 9.5, "9CA3AF", false, 1, 3, "Microsoft YaHei UI", true)
         return
     }
     DllCall("gdiplus\GdipSetClipRect", "Ptr", g, "Float", area[1], "Float", area[2], "Float", area[3], "Float", area[4], "Int", 0)
     first := Floor(st["scroll"] / rowH) + 1
     last := Min(rows.Length, first + Ceil(area[4] / rowH) + 1)
+    right := x + w - (showBar ? 18 : 14)
     i := first
     while (i <= last) {
         index := rows[i], group := st["groups"][index], newest := group["newest"]
         ry := area[2] + (i - 1) * rowH - st["scroll"]
         id := "row:" . i
         if (index = st["sel"]) {
-            LatestUiRect(g, area[1], ry, area[3], rowH, "F1F3F6")
-            LatestUiRect(g, area[1], ry, 3, rowH, "2B3038")
+            LatestUiRect(g, area[1], ry, area[3], rowH, "F1F7F3")
+            LatestUiRect(g, area[1], ry, 3, rowH, "2F7D4A")
         } else if (st["hover"] = id) {
-            LatestUiRect(g, area[1], ry, area[3], rowH, "F9FAFB")
+            LatestUiRect(g, area[1], ry, area[3], rowH, "F7F8FA")
         }
-        if (i < rows.Length)
-            LatestUiRect(g, x0, ry + rowH - 1, right - x0, 1, "F0F1F4")
-        cat := LatestVersionCategory(newest["name"])[2]
-        LatestUiRect(g, x0, ry + (rowH - 20) / 2, 42, 20, "F1F3F6", 5)
-        LatestUiText(g, cat = "压缩包" ? "ZIP" : cat = "图片" ? "IMG" : cat = "其他" ? "FILE" : cat = "Excel" ? "XLS" : cat = "Word" ? "DOC" : cat
-            , x0, ry + (rowH - 20) / 2, 42, 20, 7.5, "6B7280", true, 1)
-        LatestUiText(g, newest["name"], x0 + 52, ry, nameW - 60, rowH, 10, "1F2329", true)
-        LatestUiText(g, LatestVersionNewestFolders(group), folderX + 12, ry, folderW - 20, rowH, 9.5, "6B7280", false, 0, 5)
-        LatestUiText(g, LatestUiShortTime(newest["time"]), timeX, ry, timeW, rowH, 9.5, "374151")
+        LatestUiRect(g, area[1], ry + rowH - 1, area[3], 1, "ECEEF1")
+        ext := LatestUiExtLabel(newest["name"])
+        bw := LatestUiMeasure(st, ext, 7.5, true) + 12
+        LatestUiRect(g, x + 18, ry + 12, bw, 18, "F1F3F6", 4)
+        LatestUiText(g, ext, x + 18, ry + 12, bw, 18, 7.5, "4B5563", true, 1)
+        LatestUiText(g, newest["name"], x + 18 + bw + 8, ry + 8, right - (x + 18 + bw + 8), 26, 10.5, "1F2329", true)
         n := group["copies"].Length
-        LatestUiRect(g, countX + countW / 2 - 15, ry + (rowH - 22) / 2, 30, 22, "F1F3F6", 11)
-        LatestUiText(g, n, countX + countW / 2 - 15, ry + (rowH - 22) / 2, 30, 22, 9, n > 1 ? "1F2329" : "9CA3AF", true, 1)
         badge := LatestUiStatusBadge(st, index)
-        if (badge[2] != "") {
-            bw := LatestUiMeasure(st, badge[1], 8.5, true) + 18
-            LatestUiRect(g, statusX + 4, ry + (rowH - 22) / 2, bw, 22, badge[2], 11)
-            LatestUiText(g, badge[1], statusX + 4, ry + (rowH - 22) / 2, bw, 22, 8.5, badge[3], true, 1)
-        } else {
-            LatestUiText(g, badge[1], statusX + 4, ry, statusW - 8, rowH, 9, badge[3])
-        }
-        LatestUiGlyph(g, Chr(0xE76C), chevX, ry, chevW, rowH, 7, "C4C8CF")
+        countText := n . " 份" . (IsObject(badge) ? " · " : "")
+        cw := LatestUiMeasure(st, countText, 9)
+        LatestUiText(g, countText, x + 18, ry + 34, cw + 2, 20, 9, "6B7280")
+        if IsObject(badge)
+            LatestUiText(g, badge[1], x + 18 + cw, ry + 34, right - x - 18 - cw, 20, 9, badge[2], badge[3])
         top := Max(ry, area[2]), bottom := Min(ry + rowH, area[2] + area[4])
         if (bottom > top)
             LatestUiHit(st, id, area[1], top, area[3] - (showBar ? 14 : 0), bottom - top, false)
@@ -948,129 +965,188 @@ LatestUiDrawList(st, g, x, y, w, h) {
     }
     DllCall("gdiplus\GdipResetClip", "Ptr", g)
     if showBar {
-        trackX := x + w - 12, trackY := area[2] + 4, trackH := area[4] - 8
+        trackX := x + w - 10, trackY := area[2] + 4, trackH := area[4] - 8
         thumbH := Max(28, trackH * area[4] / contentH)
         thumbY := trackY + (trackH - thumbH) * st["scroll"] / (contentH - area[4])
         hot := st["hover"] = "thumb" || IsObject(st["drag"])
-        LatestUiRect(g, trackX + (hot ? 0 : 1), thumbY, hot ? 8 : 6, thumbH, hot ? "9CA3AF" : "D1D5DB", hot ? 4 : 3)
-        LatestUiHit(st, "track", trackX - 4, trackY, 16, trackH, false)
-        LatestUiHit(st, "thumb", trackX - 4, thumbY, 16, thumbH, false)
+        LatestUiRect(g, trackX + (hot ? -1 : 0), thumbY, hot ? 7 : 5, thumbH, hot ? "9CA3AF" : "D1D5DB", hot ? 3.5 : 2.5)
+        LatestUiHit(st, "track", trackX - 4, trackY, 14, trackH, false)
+        LatestUiHit(st, "thumb", trackX - 4, thumbY, 14, thumbH, false)
         st["bar"] := [trackY, trackH, thumbH, contentH - area[4]]
     }
 }
 
-; 副本行的小标记：[文字, 底色, 字色]；旧版本不加标记，只在时间后写“早多久”
-LatestUiCopyBadge(group, index) {
-    copy := group["copies"][index], newest := group["newest"]
-    if (index = 1)
-        return ["最新", "D3EFDC", "166534"]
-    if (copy["time"] = newest["time"])
-        return copy["size"] = newest["size"] ? ["与最新相同", "F1F3F6", "4B5563"] : ["需核对", "FDECEC", "B42318"]
-    return ""
-}
-
-LatestUiDrawDetail(st, g, x, y, w, h) {
-    LatestUiRect(g, x, y, w, h, "FFFFFF", 8, "E4E6EB")
-    st["detailRect"] := [x, y, w, h]
+; 右栏：“第二步”标题 + 图例、气泡连线图、底部提示和按钮
+LatestUiDrawGraphPane(st, g, x, y, w, h) {
+    px := x + 22, pr := x + w - 22
+    ; 底部
+    footY := y + h - 50
+    LatestUiRect(g, px, footY, pr - px, 1, "ECEEF1")
+    bx := LatestUiDrawFooter(st, g, px, footY + 9, pr - px, 32)
+    LatestUiText(g, "双击任意气泡 = 打开所在文件夹 · 绿色气泡就是最新那份，它所在的文件夹就是答案"
+        , px, footY + 9, bx - px - 12, 32, 9, "6B7280")
+    gy := y + 56, gh := footY - 6 - gy
+    st["graphRect"] := [x, gy, w, gh]
     if !st["sel"] {
-        LatestUiText(g, "单击上方列表中的一行，查看这份文件的全部副本", x, y, w, h, 10, "9CA3AF", false, 1)
+        LatestUiText(g, "第二步 · 看图", px, y + 12, pr - px, 34, 11, "1F2329", true)
+        LatestUiText(g, "在左侧选一个文件，这里就画出它的每一份副本分别在哪", px, gy, pr - px, gh, 10, "9CA3AF", false, 1)
+        st["graphMax"] := 0
         return
     }
-    group := st["groups"][st["sel"]], newest := group["newest"], copies := group["copies"]
-    ; 标题行
-    hint := "双击任一行打开所在文件夹"
-    hintW := LatestUiMeasure(st, hint, 9) + 2
-    head := "「" . newest["name"] . "」的全部副本"
-    count := "共 " . copies.Length . " 份"
-    cw := LatestUiMeasure(st, count, 10, true)
-    status := copies.Length > 1 ? LatestVersionStatus(group) : ""
-    if (status != "")
-        status := "其中 " . status
-    hw := Min(LatestUiMeasure(st, head, 10, true) + 2, w * 0.5)
-    LatestUiText(g, head, x + 16, y, hw, 40, 10, "1F2329", true)
-    LatestUiText(g, count, x + 16 + hw + 6, y, cw + 2, 40, 10, "1F2329", true)
-    sx := x + 16 + hw + 6 + cw + 10
-    LatestUiText(g, status, sx, y, x + w - 16 - hintW - 16 - sx, 40, 9, "6B7280")
-    LatestUiText(g, hint, x + w - 16 - hintW, y, hintW, 40, 9, "9CA3AF")
-    LatestUiRect(g, x + 14, y + 40, w - 28, 1, "ECEEF1")
-    ; 副本行（纵向，可滚动）
-    rowH := 34, ay := y + 41, ah := h - 41 - 5
-    maxScroll := Max(0, copies.Length * rowH - ah)
-    st["copyMax"] := maxScroll
-    st["copyScroll"] := Round(Max(0, Min(maxScroll, st["copyScroll"])))
-    folderW := Min(300, Max(160, w * 0.26))
-    btnW := 84, btnX := x + w - 16 - (maxScroll ? 10 : 0) - btnW
-    DllCall("gdiplus\GdipSetClipRect", "Ptr", g, "Float", x + 1, "Float", ay, "Float", w - 2, "Float", ah, "Int", 0)
-    for i, copy in copies {
-        ry := ay + (i - 1) * rowH - st["copyScroll"]
-        if (ry + rowH < ay || ry > ay + ah)
-            continue
-        rowId := "copyRow:" . i
-        if (st["hover"] = rowId || st["hover"] = "copy:" . i)
-            LatestUiRect(g, x + 1, ry, w - 2, rowH, "F9FAFB")
-        if (i < copies.Length)
-            LatestUiRect(g, x + 14, ry + rowH - 1, w - 28, 1, "F0F1F4")
-        isNew := i = 1
-        LatestUiText(g, LatestVersionFolderLabel(copy["rel"]), x + 24, ry, folderW - 16, rowH, 9.5, isNew ? "166534" : "1F2329", true, 0, 5)
-        cx := x + 24 + folderW
-        badge := LatestUiCopyBadge(group, i)
-        if IsObject(badge) {
-            bw := LatestUiMeasure(st, badge[1], 8.5, true) + 16
-            LatestUiRect(g, cx, ry + (rowH - 20) / 2, bw, 20, badge[2], 10)
-            LatestUiText(g, badge[1], cx, ry + (rowH - 20) / 2, bw, 20, 8.5, badge[3], true, 1)
-            cx += bw + 12
-        }
-        timeText := FormatTime(copy["time"], "yyyy-MM-dd HH:mm:ss")
-        tw := LatestUiMeasure(st, timeText, 9.5)
-        LatestUiText(g, timeText, cx, ry, tw + 2, rowH, 9.5, "374151")
-        cx += tw + 14
-        sizeText := LatestVersionSize(copy["size"])
-        zw := LatestUiMeasure(st, sizeText, 9.5)
-        LatestUiText(g, sizeText, cx, ry, zw + 2, rowH, 9.5, "6B7280")
-        cx += zw + 14
-        if (!isNew && copy["time"] != newest["time"])
-            LatestUiText(g, "早 " . LatestVersionAge(newest["time"], copy["time"]), cx, ry, btnX - 12 - cx, rowH, 9.5, "9CA3AF")
-        id := "copy:" . i
-        LatestUiRect(g, btnX, ry + (rowH - 26) / 2, btnW, 26, st["hover"] = id ? "ECEEF1" : "F7F8FA", 6, "DCDFE4")
-        LatestUiText(g, "打开文件夹", btnX, ry + (rowH - 26) / 2, btnW, 26, 8.5, "1F2329", false, 1)
-        top := Max(ry, ay), bottom := Min(ry + rowH, ay + ah)
-        if (bottom > top) {
-            LatestUiHit(st, rowId, x + 1, top, w - 2, bottom - top, false)
-            bt := Max(ry + (rowH - 26) / 2, ay), bb := Min(ry + (rowH + 26) / 2, ay + ah)
-            if (bb > bt)
-                LatestUiHit(st, id, btnX, bt, btnW, bb - bt)
+    group := st["groups"][st["sel"]], copies := group["copies"], n := copies.Length, newest := group["newest"]
+    ; 标题：第二步 · 看图：<文件名> 的 N 份分别在哪；右侧图例
+    legend := [["dot", "2F9E5B"], ["text", "最新那份", "4B5563"], ["dot", "C4C8CF"], ["text", "旧版 · 连线上的字 = 比最新早多久", "4B5563"]]
+    legendW := 0
+    for _, item in legend
+        legendW += item[1] = "dot" ? 16 : LatestUiMeasure(st, item[2], 9) + 12
+    t1 := "第二步 · 看图：", t3 := " 的 " . n . " 份分别在哪"
+    w1 := LatestUiMeasure(st, t1, 11, true), w3 := LatestUiMeasure(st, t3, 11, true)
+    showLegend := pr - px - w1 - w3 - 120 > legendW + 20
+    nameMax := pr - px - w1 - w3 - (showLegend ? legendW + 24 : 0)
+    w2 := Min(LatestUiMeasure(st, newest["name"], 11, true) + 2, Max(40, nameMax))
+    LatestUiText(g, t1, px, y + 12, w1 + 2, 34, 11, "1F2329", true)
+    LatestUiText(g, newest["name"], px + w1, y + 12, w2, 34, 11, "166534", true)
+    LatestUiText(g, t3, px + w1 + w2, y + 12, w3 + 2, 34, 11, "1F2329", true)
+    if showLegend {
+        lx := pr - legendW
+        for _, item in legend {
+            if (item[1] = "dot") {
+                LatestUiDot(g, lx + 6, y + 29, 4.5, item[2])
+                lx += 16
+            } else {
+                iw := LatestUiMeasure(st, item[2], 9)
+                LatestUiText(g, item[2], lx, y + 12, iw + 2, 34, 9, item[3])
+                lx += iw + 12
+            }
         }
     }
+    ; 布局：中心节点在左，时间轴在中间，气泡在右
+    gw := pr - px
+    nodeW := Round(Min(280, Max(180, gw * 0.24)))
+    cardW := Round(Min(620, Max(330, gw * 0.5))), cardH := 76
+    ; 中心节点按文件名换行行数定高（最多 3 行）
+    nameLines := Max(1, Min(3, Ceil(LatestUiMeasure(st, newest["name"], 10.5, true) * 1.12 / (nodeW - 36))))
+    nodeH := 44 + nameLines * 22 + 36
+    nodeX := px + 8, cardX := pr - cardW
+    axisX := nodeX + nodeW + Max(36, (cardX - nodeX - nodeW) * 0.18)
+    innerTop := gy + 34, innerH := gh - 68
+    step := Max(cardH + 10, Min(cardH + 26, n > 1 ? (innerH - cardH) / (n - 1) : cardH + 26))
+    st["graphStep"] := step
+    totalH := (n - 1) * step + cardH
+    maxScroll := Max(0, Round(totalH - innerH))
+    st["graphMax"] := maxScroll
+    st["graphScroll"] := Round(Max(0, Min(maxScroll, st["graphScroll"])))
+    top0 := maxScroll ? innerTop - st["graphScroll"] : innerTop + (innerH - totalH) / 2
+    nodeCY := maxScroll ? innerTop + innerH / 2 : top0 + totalH / 2
+    ; 时间轴两端
+    LatestUiText(g, "▲ 新", axisX - 40, gy + 4, 80, 22, 9, "166534", true, 1)
+    LatestUiText(g, "▼ 旧", axisX - 40, gy + gh - 26, 80, 22, 9, "9CA3AF", false, 1)
+    clipY := gy + 28, clipH := gh - 56
+    DllCall("gdiplus\GdipSetClipRect", "Ptr", g, "Float", x, "Float", clipY, "Float", w, "Float", clipH, "Int", 0)
+    if (n > 1)
+        LatestUiRect(g, axisX - 0.5, top0 + cardH / 2, 1, (n - 1) * step, "EEF0F3")
+    cards := LatestUiCards(st, st["sel"])
+    ; 连线：先画旧版，最后画最新那份，绿线压在最上面
+    loop n {
+        i := n - A_Index + 1, copy := copies[i]
+        cy := top0 + (i - 1) * step + cardH / 2
+        if (cy < clipY - cardH || cy > clipY + clipH + cardH)
+            continue
+        same := i > 1 && copy["time"] = newest["time"] && copy["size"] = newest["size"]
+        color := i = 1 ? "2F7D4A" : same ? "9ACBAA" : "D5D8DD"
+        LatestUiCurve(g, nodeX + nodeW, nodeCY, cardX, cy, color, i = 1 ? 2.4 : 1.4)
+        LatestUiDot(g, axisX, cy, i = 1 ? 4.5 : 3.5, i = 1 ? "2F7D4A" : "D1D5DB")
+        LatestUiDot(g, cardX, cy, i = 1 ? 4 : 3, color)
+        label := LatestUiCurveLabel(group, i)
+        lw := LatestUiMeasure(st, label[1], 9, label[3]) + 4
+        LatestUiText(g, label[1], cardX - 10 - lw, cy - 24, lw, 20, 9, label[2], label[3], 2)
+    }
+    ; 气泡卡片
+    for i, copy in copies {
+        top := top0 + (i - 1) * step
+        if (top + cardH < clipY || top > clipY + clipH)
+            continue
+        LatestUiDrawCard(st, g, cardX, top, cardW, cardH, group, i, cards[i])
+        vt := Max(top, clipY), vb := Min(top + cardH, clipY + clipH)
+        if (vb > vt)
+            LatestUiHit(st, "card:" . i, cardX, vt, cardW, vb - vt)
+    }
     DllCall("gdiplus\GdipResetClip", "Ptr", g)
+    ; 中心节点（不随气泡滚动）
+    ny := nodeCY - nodeH / 2
+    LatestUiRect(g, nodeX, ny + 3, nodeW, nodeH, "1A000000", 12)
+    LatestUiRect(g, nodeX, ny, nodeW, nodeH, st["hover"] = "node" ? "1F2124" : "2B2D31", 12)
+    ext := LatestUiExtLabel(newest["name"])
+    ew := LatestUiMeasure(st, ext, 7.5, true) + 14
+    LatestUiRect(g, nodeX + 18, ny + 16, ew, 20, "45484F", 5)
+    LatestUiText(g, ext, nodeX + 18, ny + 16, ew, 20, 7.5, "D1D5DB", true, 1)
+    LatestUiText(g, newest["name"], nodeX + 18, ny + 42, nodeW - 36, nameLines * 22 + 2, 10.5, "FFFFFF", true, 0, 3, "Microsoft YaHei UI", true)
+    LatestUiText(g, "同一个文件 · 共 " . n . " 份副本", nodeX + 18, ny + nodeH - 30, nodeW - 36, 20, 8.5, "A1A6AE")
+    LatestUiHit(st, "node", nodeX, ny, nodeW, nodeH)
+    ; 气泡太多时右侧滚动条
     if maxScroll {
-        trackY := ay + 4, trackH := ah - 8, contentH := copies.Length * rowH
-        thumbH := Max(24, trackH * ah / contentH)
-        LatestUiRect(g, x + w - 11, trackY + (trackH - thumbH) * st["copyScroll"] / maxScroll, 5, thumbH, "D1D5DB", 2.5)
+        trackY := clipY + 4, trackH := clipH - 8
+        thumbH := Max(24, trackH * innerH / totalH)
+        LatestUiRect(g, pr + 8, trackY + (trackH - thumbH) * st["graphScroll"] / maxScroll, 5, thumbH, "D1D5DB", 2.5)
     }
 }
 
+LatestUiDrawCard(st, g, x, y, w, h, group, i, info) {
+    copy := group["copies"][i], newest := group["newest"], isNew := i = 1
+    hot := st["hover"] = "card:" . i
+    if isNew {
+        LatestUiRect(g, x - 6, y - 6, w + 12, h + 12, "DCEFE2", 16)
+        LatestUiRect(g, x, y, w, h, "FBFDFB", 12, "2F7D4A", 2)
+    } else {
+        LatestUiRect(g, x, y, w, h, hot ? "FFFFFF" : "FAFAFB", 12, hot ? "9CA3AF" : "E4E6EB")
+    }
+    ; 第一行：文件夹名（+ “★ 最新”） …… 日期
+    dateText := LatestUiShortDate(copy["time"])
+    dw := LatestUiMeasure(st, dateText, 13, true) + 4
+    LatestUiText(g, dateText, x + w - 24 - dw, y + 8, dw, 32, 13, isNew ? "166534" : "1F2329", true, 2)
+    chipW := isNew ? LatestUiMeasure(st, "★ 最新", 8.5, true) + 22 : 0
+    titleW := LatestUiMeasure(st, info["title"], 11, true) + 2
+    showChip := isNew && titleW <= w - 30 - 24 - dw - 16 - chipW - 14  ; 放不下时让给文件夹名，绿框已足够醒目
+    tw := Min(titleW, w - 30 - 24 - dw - 16 - (showChip ? chipW + 14 : 0))
+    LatestUiText(g, info["title"], x + 30, y + 9, tw, 30, 11, "1F2329", true)
+    if showChip {
+        cx := x + 30 + tw + 14
+        LatestUiRect(g, cx, y + 14, chipW, 20, "D3EFDC", 10)
+        LatestUiText(g, "★ 最新", cx, y + 14, chipW, 20, 8.5, "166534", true, 1)
+    }
+    ; 第二行：路径或时间、大小 …… 时刻
+    sizeText := LatestVersionSize(copy["size"])
+    rightText := isNew ? FormatTime(copy["time"], "HH:mm") . " · " . sizeText : FormatTime(copy["time"], "HH:mm")
+    rw := LatestUiMeasure(st, rightText, 9) + 4
+    LatestUiText(g, rightText, x + w - 24 - rw, y + 42, rw, 22, 9, isNew ? "4B5563" : "9CA3AF", false, 2)
+    dx := x + 30, dRight := x + w - 24 - rw - 12
+    if isNew {
+        ; “完整路径：”单独画，路径按中间省略，保留开头和最后一级文件夹
+        pw := LatestUiMeasure(st, "完整路径：", 9)
+        LatestUiText(g, "完整路径：", dx, y + 42, pw + 2, 22, 9, "6B7280")
+        LatestUiText(g, info["dir"], dx + pw, y + 42, dRight - dx - pw, 22, 9, "6B7280", false, 0, 5)
+    } else {
+        detail := (info["ambiguous"] && info["parent"] != "" ? "上级：" . info["parent"] . " · " : "")
+            . FormatTime(copy["time"], "yyyy-MM-dd HH:mm:ss") . " · " . sizeText
+        LatestUiText(g, detail, dx, y + 42, dRight - dx, 22, 9, "6B7280")
+    }
+}
+
+; 底部按钮，从右往左排；返回最左按钮的 x，供左侧提示文字定宽
 LatestUiDrawFooter(st, g, x, y, w, h) {
-    ; [id, 文字, 宽, 底色, 悬停底色, 字色, 描边, 图标]
-    buttons := [["btnLocate", "定位最新文件", 136, "2B3038", "1F2329", "FFFFFF", "", Chr(0xE707)]
-        , ["btnCopy", "复制结果", 96, "F3F4F6", "E9EBEF", "1F2329", "E1E4EA", ""]
-        , ["btnClose", "关闭", 76, "FFFFFF", "F7F8FA", "1F2329", "DCDFE4", ""]]
+    ; [id, 文字, 宽, 底色, 悬停底色, 字色, 描边]
+    buttons := [["btnLocate", "定位最新文件", 122, "2B3038", "1F2329", "FFFFFF", ""]
+        , ["btnCopy", "复制结果", 96, "FFFFFF", "F3F4F6", "1F2329", "D1D5DB"]
+        , ["btnClose", "关闭", 68, "FFFFFF", "F3F4F6", "1F2329", "D1D5DB"]]
     bx := x + w
     for _, b in buttons {
         bx -= b[3]
-        LatestUiRect(g, bx, y, b[3], h, st["hover"] = b[1] ? b[5] : b[4], 8, b[7])
-        if (b[8] != "") {
-            tw := LatestUiMeasure(st, b[2], 9.5, true)
-            sx := bx + (b[3] - tw - 22) / 2
-            LatestUiGlyph(g, b[8], sx, y, 16, h, 9.5, b[6])
-            LatestUiText(g, b[2], sx + 22, y, tw + 2, h, 9.5, b[6], true)
-        } else {
-            LatestUiText(g, b[2], bx, y, b[3], h, 9.5, b[6], b[1] = "btnCopy", 1)
-        }
+        LatestUiRect(g, bx, y, b[3], h, st["hover"] = b[1] ? b[5] : b[4], 6, b[7])
+        LatestUiText(g, b[2], bx, y, b[3], h, 9.5, b[6], b[1] = "btnLocate", 1)
         LatestUiHit(st, b[1], bx, y, b[3], h)
-        bx -= 10
+        bx -= 12
     }
-    LatestUiText(g, "↑↓ 切换 · Enter 定位最新那份 · Ctrl+F 搜索 · Esc 关闭"
-        , x + 2, y, bx - x - 10, h, 9, "9CA3AF")
+    return bx + 12
 }
 
 ; ---------- 窗口消息 ----------
@@ -1128,7 +1204,6 @@ LatestUiOnNcHitTest(wParam, lParam, msg, hwnd) {
     states := LatestUiStates()
     if !states.Has(hwnd)
         return
-    st := states[hwnd]
     point := LatestUiPoint(lParam)
     pt := Buffer(8)
     NumPut("Int", point[1], "Int", point[2], pt)
@@ -1157,7 +1232,7 @@ LatestUiOnNcHitTest(wParam, lParam, msg, hwnd) {
         if bottom
             return 15
     }
-    if (cy < 48 * scale && cx < pw - 138 * scale)
+    if (cy < LatestUiHeaderH() * scale && cx < pw - 138 * scale)
         return 2  ; HTCAPTION
     return 1
 }
@@ -1224,19 +1299,18 @@ LatestUiOnMouseDown(wParam, lParam, msg, hwnd) {
         st["drag"] := [y, st["scroll"]]
         DllCall("SetCapture", "Ptr", hwnd)
     } else if (id = "track") {
-        page := st["listArea"][4] - 36
+        page := st["listArea"][4] - LatestUiRowH()
         st["scroll"] += (y < st["bar"][1] + (st["bar"][2] - st["bar"][3]) * st["scroll"] / Max(1, st["bar"][4])) ? -page : page
         LatestUiClampScroll(st)
         LatestUiInvalidate(st)
-    } else if (SubStr(id, 1, 4) = "row:" || SubStr(id, 1, 8) = "copyRow:") {
-        isCopy := SubStr(id, 1, 8) = "copyRow:"
+    } else if (SubStr(id, 1, 4) = "row:" || SubStr(id, 1, 5) = "card:" || id = "node") {
         last := st["lastClick"]
-        if !isCopy
+        if (SubStr(id, 1, 4) = "row:")
             LatestUiSelect(st, st["rows"][Integer(SubStr(id, 5))])
         if (last[2] = id && A_TickCount - last[1] <= DllCall("GetDoubleClickTime")) {
             st["lastClick"] := [0, ""]
-            if isCopy
-                SetTimer(LatestUiReveal.Bind(st, st["groups"][st["sel"]]["copies"][Integer(SubStr(id, 9))]["path"]), -1)
+            if (SubStr(id, 1, 5) = "card:")
+                SetTimer(LatestUiReveal.Bind(st, st["groups"][st["sel"]]["copies"][Integer(SubStr(id, 6))]["path"]), -1)
             else
                 SetTimer(LatestUiLocateSelected.Bind(st), -1)
         } else {
@@ -1265,7 +1339,7 @@ LatestUiOnMouseUp(wParam, lParam, msg, hwnd) {
     st["pressed"] := ""
     if (id = "" || id != pressed)
         return 0
-    ; 延后执行，避免在消息处理中弹出菜单 / 对话框
+    ; 延后执行，避免在消息处理中弹出对话框
     SetTimer(LatestUiClick.Bind(st, id, hit), -1)
     return 0
 }
@@ -1288,19 +1362,15 @@ LatestUiClick(st, id, hit) {
             st["prefs"]["onlyMulti"] := !st["prefs"]["onlyMulti"]
             LatestUiRefill(st)
             LatestUiEnsureVisible(st)
-        case "sort":
-            LatestUiSortMenu(st, st["sortAnchor"][1], st["sortAnchor"][2])
         case "btnCopy":
             LatestUiCopyResult(st)
         case "btnLocate":
             LatestUiLocateSelected(st)
         default:
-            if (SubStr(id, 1, 4) = "seg:") {
-                st["filter"] := st["cats"][Integer(SubStr(id, 5))]
+            if (SubStr(id, 1, 5) = "type:" && st["type"] != SubStr(id, 6)) {
+                st["type"] := SubStr(id, 6)
                 LatestUiRefill(st)
                 LatestUiEnsureVisible(st)
-            } else if (SubStr(id, 1, 5) = "copy:" && st["sel"]) {
-                LatestUiReveal(st, st["groups"][st["sel"]]["copies"][Integer(SubStr(id, 6))]["path"])
             }
     }
 }
@@ -1316,11 +1386,13 @@ LatestUiOnWheel(wParam, lParam, msg, hwnd) {
     NumPut("Int", point[1], "Int", point[2], pt)
     DllCall("ScreenToClient", "Ptr", st["gui"].Hwnd, "Ptr", pt)
     scale := A_ScreenDPI / 96
-    y := NumGet(pt, 4, "Int") / scale
-    if (st.Has("detailRect") && y >= st["detailRect"][2] && st.Has("copyMax") && st["copyMax"] > 0) {
-        st["copyScroll"] -= delta / 120 * 34 * 2
+    x := NumGet(pt, 0, "Int") / scale
+    if (x > st["leftW"]) {
+        if (st["graphMax"] <= 0)
+            return 0
+        st["graphScroll"] -= delta / 120 * st["graphStep"]
     } else {
-        st["scroll"] -= delta / 120 * 36 * 3
+        st["scroll"] -= delta / 120 * LatestUiRowH() * 2
         LatestUiClampScroll(st)
     }
     LatestUiInvalidate(st)
@@ -1345,15 +1417,16 @@ LatestUiOnKeyDown(wParam, lParam, msg, hwnd) {
         return
     inSearch := hwnd = st["search"].Hwnd
     ctrl := GetKeyState("Ctrl")
+    page := st.Has("listArea") ? Max(1, Floor(st["listArea"][4] / LatestUiRowH()) - 1) : 5
     switch wParam {
         case 0x26:
             LatestUiMoveSel(st, -1)
         case 0x28:
             LatestUiMoveSel(st, 1)
         case 0x21:
-            LatestUiMoveSel(st, -Max(1, Floor(st["listArea"][4] / 36) - 1))
+            LatestUiMoveSel(st, -page)
         case 0x22:
-            LatestUiMoveSel(st, Max(1, Floor(st["listArea"][4] / 36) - 1))
+            LatestUiMoveSel(st, page)
         case 0x0D:
             SetTimer(LatestUiLocateSelected.Bind(st), -1)
         case 0x1B:
