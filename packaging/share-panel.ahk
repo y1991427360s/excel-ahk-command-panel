@@ -13,6 +13,12 @@ global SpreadsheetRepeatAction := ""
 global SpreadsheetRepeatPending := ""
 global InputMethodProfileKey := "HKCU\Control Panel\International\User Profile"
 global ShareSelfTest := A_Args.Length && A_Args[1] = "--self-test"
+; 电缆定义总览：读朋友自己装的 DDFD 电缆向导插件写出的总览文件，与 cad-cable-panel.ahk 顶部的全局变量保持一致
+global CablePanelPath := EnvGet("TEMP") . "\DDFD-Cable\overview.txt"
+global CablePanelState := Map("ui", "", "data", "", "floor", "", "curFloor", "", "scroll", 0, "hilite", ""
+    , "stamp", 0, "closedDwg", "", "maxScroll", 0, "pos", "", "w", 440, "h", 760
+    , "plan", "", "view", "", "drag", "", "pick", "", "down", "", "reveal", "", "cabRows", [], "adjustUi", "")
+CablePanelInit()
 A_IconTip := "自动化工具面板（分享版）：Ctrl+Shift+E"
 A_TrayMenu.Add("退出自动化工具面板", (*) => ExitApp())
 if ShareSelfTest {
@@ -148,6 +154,10 @@ ShowSharePanel() {
             , ["保存并关闭", SaveAndCloseActiveCadDrawing, true, Chr(0xE74E)]
             , ["保存并重开", SaveAndReopenActiveCadDrawing, true, Chr(0xE777)])
         ModernPanelNote(ui, "支持中望 CAD 和 AutoCAD，作用于打开面板前所在 CAD 的当前图纸；强制关闭不保存、不确认。", 2)
+        ModernPanelSpace(ui, 6)
+        ModernPanelSection(ui, "电缆定义（DDFD）")
+        ModernPanelRow(ui, ["电缆定义总览", CablePanelOpen, true, Chr(0xE8A1)])
+        ModernPanelNote(ui, "需要 CAD 里已加载 DDFD 电缆向导插件。运行 DDFD 后总览自动弹出并实时刷新，点条目在 CAD 里定位。", 2)
 
         ModernPanelBeginPage(ui, "rename", contentX, contentY, contentW)
         ModernPanelSection(ui, "添加")
@@ -174,6 +184,9 @@ ShowSharePanel() {
         ModernPanelRow(ui, ["Word 转 PDF", ConvertSelectedWordFilesToPdf, hasFiles, Chr(0xE8A5)]
             , ["Excel 转 PDF", ConvertSelectedExcelFilesToPdf, hasFiles, Chr(0xE80A)])
         ModernPanelNote(ui, "需要已安装 Microsoft Word / Excel。转换后保存为同目录同名 PDF，Excel 会导出整个工作簿；源文件只读打开、不修改，覆盖前会先确认。", 2)
+        ModernPanelSpace(ui, 6)
+        ModernPanelSection(ui, "版本")
+        ModernPanelRow(ui, ["找出最新版本（同一文件的多个副本）", FindLatestFileVersions, hasFiles, Chr(0xE81C)])
 
         ModernPanelBeginPage(ui, "ime", contentX, contentY, contentW)
         ModernPanelSection(ui, "替代默认输入法")

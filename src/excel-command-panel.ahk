@@ -11,6 +11,8 @@ Persistent
 #Include cad-report-card.ahk
 #Include cad-cable-panel.ahk
 #Include cad-ai-text.ahk
+#Include cable-sort.ahk
+#Include file-latest-version.ahk
 
 global AutomationPanelGui := ""
 global AutomationContextHwnd := 0
@@ -225,6 +227,10 @@ ShowAutomationPanel() {
     ModernPanelRow(ui, ["提取文字及坐标 QW2", RunZwcadCommand.Bind("QW2", "提取文字"), true, Chr(0xE8C8)]
         , ["写回文字 QW2P", RunZwcadCommand.Bind("QW2P", "写入文字"), true, Chr(0xE70F)])
     ModernPanelNote(ui, "不开窗口也能用：QW2 的结果贴给任意 AI，要求它按“x,y 文字”原格式返回，复制后点 QW2P。", 2)
+    ModernPanelSpace(ui, 6)
+    ModernPanelSection(ui, "电缆清册排序导出（YSDL3）")
+    ModernPanelRow(ui, ["打开 CSV 重新整理", CableSortOpenCsv, true, Chr(0xE8E5)])
+    ModernPanelNote(ui, "排序窗口在 CAD 里运行 YSDL3 后自动弹出。导出过的 CSV 可在这里打开重新整理、另存新 CSV，不需要 CAD。", 2)
 
     ModernPanelBeginPage(ui, "rename", contentX, contentY, contentW)
     ModernPanelSection(ui, "添加")
@@ -249,6 +255,7 @@ ShowAutomationPanel() {
         , ["Excel 转 PDF", ConvertSelectedExcelFilesToPdf, hasFiles, Chr(0xE80A)])
     ModernPanelRow(ui, ["MP4 转 GIF", ConvertSelectedVideosToGif, hasFiles, Chr(0xE714)]
         , ["压缩视频", CompressSelectedVideos, hasFiles, Chr(0xE73F)])
+    ModernPanelRow(ui, ["找出最新版本（同一文件的多个副本）", FindLatestFileVersions, hasFiles, Chr(0xE81C)])
     ModernPanelNote(ui, "PDF 按文件名顺序合并到首个 PDF 所在文件夹；统计图幅可选 PDF、文件夹或 rar/zip/7z。Word、Excel、视频转为同目录同名 PDF / GIF，压缩视频放进同目录新建的“压缩视频”文件夹，覆盖前会确认。", 3)
 
     ModernPanelBeginPage(ui, "ime", contentX, contentY, contentW)
@@ -358,7 +365,8 @@ DescribeAutomationPanelContext() {
         documentCount := 0
         for filePath in AutomationSelectedFilePaths {
             SplitPath(filePath, , , &extension)
-            if RegExMatch(extension, "i)^(pdf|docx?|docm|xlsx?|xlsm|xlsb|rar|zip|7z|mp4|mov|mkv|avi|webm|m4v|wmv|flv)$")
+            ; 选中文件夹也进“文件处理”页：批量改名会跳过文件夹，而找出最新版本、统计图幅都按文件夹处理
+            if (DirExist(filePath) || RegExMatch(extension, "i)^(pdf|docx?|docm|xlsx?|xlsm|xlsb|rar|zip|7z|mp4|mov|mkv|avi|webm|m4v|wmv|flv)$"))
                 documentCount += 1
         }
         SplitPath(AutomationSelectedFilePaths[1], &firstName)

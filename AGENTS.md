@@ -6,6 +6,11 @@
 - 主脚本是 `src/excel-command-panel.ahk`；`install.ps1` 创建启动项并直接运行该文件，不复制脚本副本。
 - 用户文档与使用方法以 `README.md` 为准；新增或修改用户流程时必须同步更新 README。
 
+## 工作流程文档联动
+
+- 本面板是用户二次接线工作流程的一部分，流程说明在 `D:\Syncthing\Oracle-Sync\工作智能体\工作流程\AutoHotkey面板-CAD与表格辅助.md`（入口为该目录 `CLAUDE.md`）。
+- 面板用途、按钮、与中望插件交换数据的文件格式或 LISP 接口变化时，同步更新该流程文档（含 frontmatter 的 `updated`）；涉及插件命令时同时遵守 `D:\Syncthing\Oracle-Sync\LISP\CLAUDE.md`。
+
 ## 表格兼容边界
 
 - Microsoft Excel 使用 `Excel.Application`，WPS 表格使用 `Ket.Application`。
@@ -55,6 +60,14 @@
 - 发给 AI 前由脚本把“x,y 文字”参照表按行整理、模板去重，不要让 AI 自己还原坐标：2026-10-31 实测带思考的模型会因此把 8192 token 全耗在思考上。参照表取了值却没被规则用到的变量必须判校验失败。
 - 图片识别只负责把表格转成制表符文字并填入参照表，必须由用户核对后才进入规则生成，不得直接串到写回。
 - 回归：`python tests/cad-ai-text-smoke.py`、`python tests/cad-ai-provider-smoke.py`（离线，后者用本地模拟服务）；`tests/cad-ai-settings-smoke.ahk` 用临时配置测保存与解密；`tests/cad-ai-text-window-smoke.ahk` 真实调用 AI 并改写剪贴板。均不连接 CAD。
+
+## 电缆排序（YSDL3）边界
+
+- `src/cable-sort-core.ahk` 只放纯逻辑（解析 job、配对、规则匹配、推断、气泡初始分类、排序、生成 result），不碰界面和 CAD；`src/cable-sort.ahk` 是窗口。job/result 文件格式以中望 `AA整合版本.lsp` 的 YSDL3 段注释为准，改格式必须两边同时改（result 现为第 2 版，插件会拒绝其他版本）。
+- 同编号两行跨分类框配对；第 2 列不是电缆编号的行作为“其他行”条目。分类气泡初始为图上的分类框，导出只按气泡（气泡名 = CSV 分类列，气泡顺序与气泡内顺序 = 导出顺序），未分类的不导出。用户 2026-11-09 确认：不再移动 CAD 清册文字。
+- 柜名比较同中望 `hddl:cabinet`（去全部空白、开头的“至”，忽略大小写）。
+- “导出”只在 CAD 空闲（`CMDACTIVE = 0`）且 job 里的图纸已打开时发送 `(aa:ysdl3-apply "任务号")`；写 CSV、变色、校验都由插件做，面板不直接改图。
+- 回归：`tests/cable-sort-core-smoke.ahk`、`tests/cable-sort-window-smoke.ahk`（窗口放屏幕外，截图前先 `RedrawWindow` 整体重绘），均不连接 CAD；测试代码放在函数里并用 `#Warn All, StdOut`，避免弹出警告对话框。
 
 ## AutoHotkey v2 语法红线与验证部署
 

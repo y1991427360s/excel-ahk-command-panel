@@ -149,7 +149,7 @@ CablePanelOpen(*) {
     if IsObject(CablePanelState["data"])
         CablePanelRender()
     else
-        TrayTip("还没有总览数据，在 CAD 里运行 DCW 或 DCV 后会自动显示。", "电缆定义总览", "Iconi Mute")
+        TrayTip("还没有总览数据，在 CAD 里运行 DDFD 后会自动显示。", "电缆定义总览", "Iconi Mute")
 }
 
 CablePanelClose(*) {

@@ -61,8 +61,15 @@ def build_panel_script():
         pending = '\n'.join(functions[name] for name in sorted(found))
     script = body + '\n\n' + '\n\n'.join(code for name, code in functions.items() if name in used) + '\n'
     # 分享版不能带上本机路径、LISP 插件、系统 Python 或 AI 依赖；PDF 功能改用包内 pdf-tools.exe。
+    # 电缆定义总览（cad-cable-panel.ahk）只读 DDFD 插件写的总览文件，朋友自己装有插件，所以随包带上；
+    # 它顶部的全局变量不在函数里提取不到，share-panel.ahk 里抄了一份，这里核对没有走样。
+    cable_source = (PROJECT / 'src/cad-cable-panel.ahk').read_text(encoding='utf-8-sig').replace('\r\n', '\n')
+    cable_globals = cable_source[cable_source.index('global CablePanelPath'):]
+    cable_globals = cable_globals[:cable_globals.index('\n\n')]
+    if cable_globals not in body.replace('\r\n', '\n'):
+        raise ValueError('share-panel.ahk 里的 CablePanel 全局变量与 src/cad-cable-panel.ahk 不一致')
     for forbidden in ('CopyQ', 'Syncthing', 'Oracle-Sync', 'ys199', 'AA整合版本', 'D:\\', 'python', 'pypdf',
-                      'OpenSelectedDwg', 'RunZwcadCommand', 'ReloadCadAaLsp', 'CablePanel', 'CadAi', 'GetProjectAtlas',
+                      'OpenSelectedDwg', 'RunZwcadCommand', 'ReloadCadAaLsp', 'CadAi', 'GetProjectAtlas',
                       'TrustedDwg'):
         if forbidden.lower() in script.lower():
             raise ValueError('Unexpected personal/file-tool dependency: ' + forbidden)
