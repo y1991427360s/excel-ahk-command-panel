@@ -394,7 +394,8 @@ Panel2SearchMatch(item, terms) {
     return true
 }
 
-; 汉字转拼音首字母（GB2312 一级汉字按区位码分段，覆盖常用 3755 字；其余字符原样小写保留）。
+; 汉字转拼音首字母：GB2312 一级汉字（常用 3755 字）按区位码分段；二级汉字（3008 字，如麒、麟、鑫）查表
+; Panel2PinyinLevel2（按 pypinyin 生成，每区 94 字一行）；其余字符原样保留。
 Panel2PinyinInitials(text) {
     static cache := Map()
     static bounds := [[0xB0A1, "a"], [0xB0C5, "b"], [0xB2C1, "c"], [0xB4EE, "d"], [0xB6EA, "e"], [0xB7A2, "f"], [0xB8C1, "g"]
@@ -418,11 +419,50 @@ Panel2PinyinInitials(text) {
             for bound in bounds
                 if (code >= bound[1])
                     letter := bound[2]
+        } else if (code >= 0xD8A1 && code <= 0xF7FE && (code & 0xFF) >= 0xA1 && (code & 0xFF) <= 0xFE) {
+            letter := SubStr(Panel2PinyinLevel2(), ((code >> 8) - 0xD8) * 94 + (code & 0xFF) - 0xA1 + 1, 1)
         }
         result .= letter != "" ? letter : ch
     }
     cache[text] := result
     return result
+}
+
+; GB2312 二级汉字（0xD8A1 ~ 0xF7FE）的拼音首字母，每行一个区 94 字。
+Panel2PinyinLevel2() {
+    static table := "cjwgnspgcgnegypbtyyzdxykygtzjnmjqmbsgzscyjsyyfpgkbzgydywjkgkljswkpjqhyjwrdzlsgmrypywwcckznkyyg"
+        . "ttngjeykkzytcjnmcylqlypyqfqrpzslwbtgkjfyxjwzltbncxjjjjtxdttsqzycdxxhgckbphffsstybgmxlpbyllbhlx"
+        . "smzmyjhsojnghdzqyklgjhsgqzhxqgkezzwyscscjxyeyxadzpmdssmzjzqjyzcjjfwqjbdzbxgznzcpwhkxhqkmwfbpby"
+        . "dtjzzkqhylygxfptyjyyzpszlfchmqshgmxxsxjyqdcsbbqbefsjyhwwgzkpylqbgldlcctnmayddkssngycsgxlyzaypn"
+        . "ptsdkdylhgymylcxpycjndqjwqqxfyyfjlejpzrxccqwqqsbzkymgplbmjrqcflnymyqmsqtrbcjthztqfrxqhxmjjcjlx"
+        . "xgjmshzkbswyemyltxfsydsglycjqxsjnqbsctyhbftdcyjdjwyghqfrxwckqkxebptlpxjzsrmebwhjlbjslyysmdxlcl"
+        . "qkxlhxjrzjmfqhxhwywsbhtrxxglhqhfnmgykldyxzpylggsmtcfpajjzyljtyanjgbjplqgdzyqyaxbkysecjsznslyzh"
+        . "zxlzcghpxzhznytdsbcjkdlzyyfwydlebbgqyzkggldndnyskjshdlyxbcghxypkdjmmzngmmclgwzszxzjfznmlzzthcs"
+        . "ydbdllscddnlkjykjsycjlkohqasdknhcsganhdaashtcplcpqybsdmpjlpcjoqlcdhjjysprchnwjnlhlyyqyhwzptczg"
+        . "wwmzffjqqqqyxaclbhkdjxdgmmydjxzllsygxgkjrywzwyclzmssjzldbydcpcxyhlxchyzjqsqqagmnyxpfrkssbjlyxy"
+        . "syglnscmhcwwmnzjjlxxhchsyzsttxrycyxbyhcsmxjsznpwgpxxtaybgajcxlyxdccwzocwkccsbnhcpdyznfcyytyckx"
+        . "kybsqkkytqqxfcwchcykelzqbsqyjqcclmthsywhmktlkjlycxwheqqhtqhqpqsqscfymmdmgbwhwlgsllystlmlxpthmj"
+        . "hwljzyhzjxhtxjlhxrswlwzjcbxmhzqxsdzpmgfcsglsxymjshxpjxwmyqksmyplrthbxftpmhyxlchlhlzylxgsssstcl"
+        . "sldclrpbhzhxyyfhbmgdmycnqqwlqhjjcywjzyejjdhpblqxtqkwhlchqxagtlxljxmsljhtzkzjecxjcjnmfbycsfywyb"
+        . "jzgnysdzsqyrsljpclpwxsdwejbjcbcnaytwgmpapclyqpclzxsbnmsggfnzjjbzsfzyndxhplqkzczwalsbccjxsyzgwk"
+        . "ypsgxfzfcdkhjgxtlqfsgdslqwzkxtmhsbgzmjzrglyjbpmlmsxlzjqqhzyjczydjwbwjklddpmjegxyhylxhlqyqhkycw"
+        . "cjmyyxnatjhyccxzpcqlbzwwytwbqcmlpmyrjcccxfpznzzljplxxyztzlgdldcklyrzzgqtgjhhgjljaxfgfjzslcfdqz"
+        . "lclgjdjzsnzlljpjqdcclcjxmyzftsxgcgsbrzxjqqctzhgyqtjqqlzxjylylbcyamcstylpdjbyregklzyzhlyszqlznw"
+        . "czcllwjqjjjkdgjzolbbzppglghtgzxyjhzmycnqcycyhbhgxkamtxyxnbskyzzgjzlqjdfcjxdygjqjjpmgwgjjjpkqsb"
+        . "gbmmcjssclpqpdxcdyykypcjddyygywrhjrtgznyqldkljszzgzqzjgdykshpzmtlcpwnjyfyzdjcnmwescyglbtzcgmss"
+        . "llyxysxsbsjsbbsgghfjlypmzjnlyywdqshzxtyywhmcyhywdbxbtlmsyyyfsxjcbdxxlhjhfssxzqhfzmzcztqcxzxrtt"
+        . "djhnnyzqqmtqdmmgyydxmjgdhcdyzbffallztdltfxmxqzdngwqdbdcdjdxbzgsqqddjcmbkzffxmkdmdsyyszcmljdsyn"
+        . "sprskmkmpcklgtbqtfzswtfgglyplljzhgjjgypzltcsmcnbtjbqfkthbyzgkpbbymtdssxtbnpdkleycjnyddykzddhqh"
+        . "sdzsctarlltkzlgecllkjlqjaqnbdkkghpjtzqksecshalqfmmgjnlyjbbtmlyzxdcjpldlpcqdhzycbzsczbzmsljflkr"
+        . "zjsnfrgjhxpdhyjybzgdlqcsezgxlblgyxtwmabchecmwyjyzlljjyhlgndjlslygkdzpzxjyyzlwcxszfgwyydlyhcljs"
+        . "cmbjhblyzlycblydpdqysxqzbytdkyxjyycnrjmpdjgklcljbctbjddbblblczqrppxjcjlzcshltoljnmdddlngkathqh"
+        . "jhykheznmshrphqqjchgmfprxhjgdychghlyrzqlcyqjnzsqtkqjymszswlcfqqqxyfggyptqwlmcrnfkkfsyylqbmqamm"
+        . "myxctpshcptxxzzsmphpshmclmldqfyqxszyjdjjzzhqpdszglstjbckbxyqzysgpsxqzqzrqtbdkyxzkhhgflbcsmdldg"
+        . "dzdblzyycxnncsybzbfglzzxswmsccmqnjqsbdqsjtxxmbltxzclzshzcxrqjgjylxzfjphymzqqydfqjjlzznzjsdgzyg"
+        . "ctxmzysctlkphtxhtlbjxjlxscdqxcbbtjfqzfsltjbtkqbxxjjljchczdbzjdczjdcprnpqcjpfczlclzxzdmxmphjsgz"
+        . "gszzqjylwtjpfsyaxmcjbtzkycwmytzsjjlqcqlwzmalbxyfbpnlsfhtgjwejjxxglljstgshjqlzfkcgnndszfdeqfhbs"
+        . "aqtgylbxmmygszldydqmjjrgbjtkgdhgkblqkbdmbylxwcxyttybkmrtjzxqjbhlmhmjjzmqasldcyxyqdlqcafywyxqhz"
+    return table
 }
 
 ; 搜索框有焦点时的 Esc（输入框会吞掉 Esc，面板的 Escape 事件收不到）：有字先清空，没字关闭面板。
@@ -750,6 +790,7 @@ CycleAutomationPanel2Page(step) {
 Panel2HotkeysInit() {
     CustomHotkeyAddScope("panel2", "2号自动化面板", EnvGet("LOCALAPPDATA") . "\AutoHotkeyPanel\panel2-hotkeys.ini"
         , Panel2HotkeyCommands, "panel2.open", "!q")
+    CustomHotkeyScopes["panel2"]["onChange"] := Panel2OnHotkeysChanged
     CustomHotkeysInit("panel2")
     static trayDone := false
     if !trayDone {
@@ -758,6 +799,31 @@ Panel2HotkeysInit() {
         A_TrayMenu.Insert("5&")
         trayDone := true
     }
+}
+
+; 设置窗口里改了快捷键：2号面板正开在“快捷键”页时原位重建，让“已设置”列表与卡片提示同步，再把设置窗口放回前台。
+Panel2OnHotkeysChanged() {
+    global AutomationPanel2Gui, AutomationPanel2Ui, CustomHotkeyWindow
+    if !IsObject(AutomationPanel2Gui) || !IsObject(AutomationPanel2Ui)
+        return
+    try {
+        if !WinExist("ahk_id " . AutomationPanel2Gui.Hwnd) || !DllCall("IsWindowVisible", "Ptr", AutomationPanel2Gui.Hwnd)
+            return
+    } catch
+        return
+    Panel2Build(AutomationPanel2Ui["current"], true)
+    if IsObject(CustomHotkeyWindow)
+        try WinActivate("ahk_id " . CustomHotkeyWindow.Hwnd)
+}
+
+; 常用软件 / 文件夹清单变了：2号面板的快捷键设置窗口若开着，重开一次，免得功能列表停留在旧清单。
+Panel2RefreshHotkeyWindow() {
+    global CustomHotkeyWindow, CustomHotkeyWindowScope
+    if !IsObject(CustomHotkeyWindow) || CustomHotkeyWindowScope != "panel2"
+        return
+    try CustomHotkeyWindow.Destroy()
+    CustomHotkeyWindow := ""
+    OpenCustomHotkeyWindow("panel2")
 }
 
 ; 2号面板可绑定快捷键的功能：入口、文件处理，以及每个常用软件 / 文件夹（id 由类型和路径算出，改名不变）。
@@ -857,6 +923,7 @@ Panel2SaveShortcuts(items) {
     file.Write(text)
     file.Close()
     FileMove(tempPath, path, 1)
+    Panel2RefreshHotkeyWindow()
 }
 
 Panel2IndexOf(items, item) {
@@ -1489,10 +1556,19 @@ Panel2RevealShortcut(item) {
     global AutomationPanel2Gui
     try AutomationPanel2Gui.Hide()
     path := RTrim(item["path"], "\")
-    if RegExMatch(path, "^[A-Za-z]:$")
+    if RegExMatch(path, "^[A-Za-z]:$") {
         Run('explorer.exe "' . path . '\"')
-    else
-        Run('explorer.exe /select,"' . path . '"')
+        return
+    }
+    ; 用 Shell API 定位并选中：explorer.exe /select 会把路径里的英文逗号当参数分隔符，打开到“文档”。
+    pidl := 0
+    if (DllCall("shell32\SHParseDisplayName", "WStr", path, "Ptr", 0, "Ptr*", &pidl, "UInt", 0, "Ptr", 0) = 0 && pidl) {
+        result := DllCall("shell32\SHOpenFolderAndSelectItems", "Ptr", pidl, "UInt", 0, "Ptr", 0, "UInt", 0)
+        DllCall("ole32\CoTaskMemFree", "Ptr", pidl)
+        if (result = 0)
+            return
+    }
+    Run('explorer.exe /select,"' . path . '"')
 }
 
 Panel2SetShortcutColor(item, colorIndex, *) {

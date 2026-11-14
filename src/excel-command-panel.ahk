@@ -46,6 +46,12 @@ LogPanelDiagnostic(eventName, details := "") {
         logLine := FormatTime(A_Now, "yyyy-MM-dd HH:mm:ss") . " [" . eventName . "]"
         if (details != "")
             logLine .= "`r`n" . details
+        ; 日志超过 1 MB 时只保留后半段，避免长期运行无限增长。
+        if (FileExist(logPath) && FileGetSize(logPath) > 1048576) {
+            text := FileRead(logPath, "UTF-8")
+            keepFrom := InStr(text, "`n", , StrLen(text) // 2)
+            FileOpen(logPath, "w", "UTF-8").Write(SubStr(text, keepFrom + 1))
+        }
         FileAppend(logLine . "`r`n", logPath, "UTF-8")
     }
 }
@@ -426,7 +432,8 @@ RoundSpreadsheetSelectionUpToTen() {
     invalidReason := ""
 
     try {
-        for area in selection.Areas {
+        ; 整列 / 整行选区只处理与 UsedRange 的交集，避免逐格遍历上百万个空单元格。
+        for area in GetBoundedSpreadsheetAreas(context) {
             for cell in area.Cells {
                 address := cell.Address(false, false)
                 if (cell.HasFormula) {
@@ -695,6 +702,9 @@ SplitMergedSpreadsheetCellsAndFill(explicitContext := "") {
                                     }
                                 }
                             }
+                            ; 横向合并占 k+1 列，后续省略 ss:Index 的单元格要从合并块右侧开始计列。
+                            if hasMergeAcross
+                                curRelCol += Integer(acrossM[1])
                         }
                     }
                     ; 找到 Table 却未识别到合并块时，必须进入兼容检测。
@@ -804,10 +814,24 @@ SplitMergedSpreadsheetCellsAndFill(explicitContext := "") {
         }
 
         if (areaItems.Length > 0) {
+                ; 整块写回 Value2 会把选区里的公式变成数值。只有确认区域内没有公式时才走矩阵写回；
+                ; HasFormula 为 True 或混合（Null）、或读取失败时，改为逐个合并块填充，普通单元格不碰。
+                hasFormulas := true
+                try {
+                    hasFormulaState := areaRange.HasFormula
+                    if (!IsObject(hasFormulaState) && hasFormulaState == 0)
+                        hasFormulas := false
+                }
+                if hasFormulas {
+                    ; 撤销需要恢复左上角原公式，这里改记 FormulaR1C1。
+                    for item in areaItems
+                        item["cells"][1]["content"] := GetSpreadsheetCellContent(worksheet.Range(item["cells"][1]["address"]))
+                }
                 areaInfos.Push(Map(
                     "range", areaRange,
                     "values", areaValues,
-                    "items", areaItems
+                    "items", areaItems,
+                    "hasFormulas", hasFormulas
                 ))
             }
         }
@@ -842,9 +866,20 @@ SplitMergedSpreadsheetCellsAndFill(explicitContext := "") {
         ; 拆分与填充：整块 UnMerge 与 SafeArray 批量写回，彻底消除逐个单元格 COM IPC
         for info in areaInfos {
             info["range"].UnMerge()
-            info["range"].Value2 := info["values"]
+            ; 已拆开的块都要在失败时重新合并，所以拆分后立即标记。
             for item in info["items"]
                 item["applied"] := true
+            if !info["hasFormulas"] {
+                info["range"].Value2 := info["values"]
+                continue
+            }
+            for item in info["items"] {
+                worksheet.Range(item["address"]).Value2 := item["fillContent"]
+                topState := item["cells"][1]
+                topContent := topState["content"]
+                if (IsObject(topContent) && topContent["type"] = "formulaR1C1" && SubStr(topContent["value"], 1, 1) = "=")
+                    worksheet.Range(topState["address"]).FormulaR1C1 := topContent["value"]
+            }
         }
     } catch as err {
         operationError := err.Message
@@ -1053,28 +1088,27 @@ MergeIdenticalSpreadsheetCells(explicitContext := "") {
             undoAction["items"].Push(item)
         }
 
-        ; 执行合并前对整个选区一次性广播设置居中对齐，消除后续循环内对各合并块的重复对齐调用
-        processRange.HorizontalAlignment := -4108
-        processRange.VerticalAlignment := -4108
-
-        ; 批量执行合并：分批使用逗号分隔 Range 字符串调用 Merge()，从 806 次 COM IPC 压缩至 ~35 次
+        ; 批量执行合并：分批使用逗号分隔 Range 字符串调用 Merge()，从 806 次 COM IPC 压缩至 ~35 次。
+        ; 居中对齐也按同一批次设置，只作用于实际合并的块，选区里单独出现的单元格保持原对齐。
         mergeError := ""
         try {
             currentBatch := ""
+            batchItems := []
             for item in undoAction["items"] {
-                item["applied"] := true
                 addr := item["address"]
                 if (currentBatch = "") {
                     currentBatch := addr
                 } else if (StrLen(currentBatch) + 1 + StrLen(addr) <= 240) {
                     currentBatch .= "," . addr
                 } else {
-                    worksheet.Range(currentBatch).Merge()
+                    MergeSpreadsheetBatchCentered(worksheet, currentBatch, batchItems)
                     currentBatch := addr
+                    batchItems := []
                 }
+                batchItems.Push(item)
             }
             if (currentBatch != "")
-                worksheet.Range(currentBatch).Merge()
+                MergeSpreadsheetBatchCentered(worksheet, currentBatch, batchItems)
         } catch as err {
             mergeError := err.Message
             try RestoreUndoAction(xl, undoAction)
@@ -1839,7 +1873,8 @@ AddTextToExcelSelection(position, presetText := "") {
         action := ApplySpreadsheetTextTransform(context, position, addedText)
         if IsObject(action) {
             PushUndoAction(action)
-            SetSpreadsheetRepeatPending(AddTextToExcelSelection.Bind(position, addedText))
+            SetSpreadsheetRepeatPending(AddTextToExcelSelection.Bind(position, addedText)
+                , (isPrefix ? "添加前缀：" : "添加后缀：") . addedText)
         }
     } catch as err {
         MsgBox("处理失败：" . err.Message, title, "Icon!")
@@ -2698,8 +2733,37 @@ RestoreMergedRangeUndoItem(ws, item) {
             }
         }
     }
+    ; “合并相同内容”按块记录合并前的对齐方式，撤销时整块恢复。
+    if (item.Has("horizontalAlignment") && item["horizontalAlignment"] != "")
+        try range.HorizontalAlignment := item["horizontalAlignment"]
+    if (item.Has("verticalAlignment") && item["verticalAlignment"] != "")
+        try range.VerticalAlignment := item["verticalAlignment"]
 
     item["applied"] := false
+}
+
+; 合并一批（逗号分隔、≤240 字符）同值块并设为居中。合并前先记录原对齐方式供撤销：
+; 整批对齐一致时一次读取即可；不一致（Excel 返回 Null）时才逐块读取。
+MergeSpreadsheetBatchCentered(worksheet, batchAddress, batchItems) {
+    batchRange := worksheet.Range(batchAddress)
+    batchHorizontal := ""
+    batchVertical := ""
+    try batchHorizontal := batchRange.HorizontalAlignment
+    try batchVertical := batchRange.VerticalAlignment
+    for item in batchItems {
+        horizontal := batchHorizontal
+        vertical := batchVertical
+        if (IsObject(horizontal) || horizontal = "")
+            try horizontal := worksheet.Range(item["address"]).HorizontalAlignment
+        if (IsObject(vertical) || vertical = "")
+            try vertical := worksheet.Range(item["address"]).VerticalAlignment
+        item["horizontalAlignment"] := IsObject(horizontal) ? "" : horizontal
+        item["verticalAlignment"] := IsObject(vertical) ? "" : vertical
+        item["applied"] := true
+    }
+    batchRange.Merge()
+    batchRange.HorizontalAlignment := -4108
+    batchRange.VerticalAlignment := -4108
 }
 
 GetSpreadsheetProperty(app, propertyName, fallback) {
@@ -2710,6 +2774,8 @@ GetSpreadsheetProperty(app, propertyName, fallback) {
             return app.EnableEvents
         if (propertyName = "DisplayAlerts")
             return app.DisplayAlerts
+        if (propertyName = "Calculation")
+            return app.Calculation
     }
     return fallback
 }
@@ -2851,19 +2917,16 @@ ReplaceTextInSelectedFileNames() {
         path := Trim(path, '" `t')
         if DirExist(path)
             continue
-        slashPos := InStr(path, "\",, -1)
-        if (slashPos < 1)
+        ; 只替换文件主名，.html / .xml / .yaml 等扩展名里的 ml 不能动。
+        SplitPath(path, &name, &dir, &ext, &nameNoExt)
+        if (dir = "" || !InStr(nameNoExt, findText, false))
             continue
-        dir := SubStr(path, 1, slashPos - 1)
-        name := SubStr(path, slashPos + 1)
-        if !RegExMatch(name, "i)" . findText)
-            continue
-        newName := RegExReplace(name, "i)" . findText, replaceText)
-        if (newName = "") {
+        newBase := StrReplace(nameNoExt, findText, replaceText, false)
+        if (newBase = "") {
             MsgBox("替换后文件名会变空，已取消。`n`n文件：" . name, title, "Icon!")
             return
         }
-        newPath := dir . "\" . newName
+        newPath := dir . "\" . newBase . (ext = "" ? "" : "." . ext)
         if (newPath != path)
             operations.Push(Map("from", path, "to", newPath))
     }

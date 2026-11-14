@@ -724,10 +724,13 @@ ModernPanelDrawFolderIcon(graphics, x, y, size, argb) {
 
 ; 取文件或文件夹的系统图标（48px，带透明通道）转成 GDI+ 位图，按路径缓存；失败返回 0。
 ModernPanelFileIcon(path) {
-    static cache := Map()
+    static cache := Map(), failedAt := Map()
     key := StrLower(path)
     if cache.Has(key)
         return cache[key]
+    ; 失败（如网络盘 / U 盘暂时未连接）不永久缓存，30 秒后再试，避免每次重绘都去等离线路径。
+    if (failedAt.Has(key) && A_TickCount - failedAt[key] < 30000)
+        return 0
     ModernPanelGdiplusStart()
     bitmap := 0
     try {
@@ -747,7 +750,13 @@ ModernPanelFileIcon(path) {
             }
         }
     }
-    cache[key] := bitmap
+    if bitmap {
+        cache[key] := bitmap
+        if failedAt.Has(key)
+            failedAt.Delete(key)
+    } else {
+        failedAt[key] := A_TickCount
+    }
     return bitmap
 }
 

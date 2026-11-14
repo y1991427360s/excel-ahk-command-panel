@@ -198,9 +198,7 @@ CadAiReadImage() {
         image := CadAiWorkDir . "\table-image.png"
         if FileExist(image)
             FileDelete(image)
-        command := "$i=Get-Clipboard -Format Image;if($i){$i.Save('" . image . "',[Drawing.Imaging.ImageFormat]::Png)}"
-        RunWait('powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Command "' . command . '"', , "Hide")
-        if !FileExist(image) {
+        if !CadAiSaveClipboardPng(image) || !FileExist(image) {
             MsgBox("读取剪贴板图片失败。", title, "Icon!")
             return
         }
@@ -214,6 +212,36 @@ CadAiReadImage() {
         if FileExist(paths[name])
             FileDelete(paths[name])
     CadAiStartJob('--read-image "' . image . '" --out "' . paths["out"] . '" --report "' . paths["report"] . '"', paths, "image")
+}
+
+; 剪贴板位图直接用 GDI+ 存成 PNG（面板进程已加载 GDI+），不再每次冷启动 PowerShell。
+; CF_BITMAP 由系统从 CF_DIB 自动合成；剪贴板可能被其他程序短暂占用，约 1 秒内重试打开。
+CadAiSaveClipboardPng(path) {
+    ModernPanelGdiplusStart()
+    opened := false
+    Loop 20 {
+        if DllCall("OpenClipboard", "Ptr", A_ScriptHwnd) {
+            opened := true
+            break
+        }
+        Sleep(50)
+    }
+    if !opened
+        return false
+    saved := false
+    try {
+        hBitmap := DllCall("GetClipboardData", "UInt", 2, "Ptr")   ; CF_BITMAP
+        bitmap := 0
+        if (hBitmap && DllCall("gdiplus\GdipCreateBitmapFromHBITMAP", "Ptr", hBitmap, "Ptr", 0, "Ptr*", &bitmap) = 0 && bitmap) {
+            ; 句柄归剪贴板所有，关闭剪贴板前就存盘，不复用它的内存。
+            pngEncoder := Buffer(16)
+            DllCall("ole32\CLSIDFromString", "WStr", "{557CF406-1A04-11D3-9A73-0000F81EF32E}", "Ptr", pngEncoder)
+            saved := DllCall("gdiplus\GdipSaveImageToFile", "Ptr", bitmap, "WStr", path, "Ptr", pngEncoder, "Ptr", 0) = 0
+            DllCall("gdiplus\GdipDisposeImage", "Ptr", bitmap)
+        }
+    }
+    DllCall("CloseClipboard")
+    return saved
 }
 
 ; 只发一句话测试接口，结果写进“校验与核对”

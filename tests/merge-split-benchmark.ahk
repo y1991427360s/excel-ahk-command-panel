@@ -535,8 +535,9 @@ try {
         FileAppend(Format("  - [FAIL] MergeIdentical 性能硬指标未达标：耗时 {1:.2f} ms (<1000ms)，提速 {2:.2f}x (>3.0x)。`r`n", optMergeMs, speedupMerge), reportFile, "UTF-8")
 
     ; 4. 优化后生产函数纵向合并与居中断言
-    Assert(sheetMergeOpt.Range("A1:C1000").HorizontalAlignment = -4108, "选区水平居中未生效")
-    Assert(sheetMergeOpt.Range("A1:C1000").VerticalAlignment = -4108, "选区垂直居中未生效")
+    ; 居中只作用于实际合并的块：A500 是空白单格，未参与合并，对齐方式必须保持原样（xlGeneral = 1）。
+    Assert(sheetMergeOpt.Range("A500").MergeCells == false, "A500 空白单格不应被合并")
+    Assert(sheetMergeOpt.Range("A500").HorizontalAlignment = 1, "未合并的单格 A500 水平对齐被改动")
     checkedMergeIdx := 0
     for item in undoMergeOpt["items"] {
         checkedMergeIdx += 1
@@ -573,6 +574,9 @@ try {
     Assert(!sheetMergeOpt.Range("A248:A249").MergeCells, "撤销后区域 A248:A249 依然为合并状态")
     Assert(sheetMergeOpt.Range("A248").Value = "跨分页测试段", "撤销还原单元格内容不符")
     Assert(sheetMergeOpt.Range("A249").Value = "跨分页测试段", "撤销还原附属单元格内容不符")
+    Assert(sheetMergeOpt.Range("A248:A249").HorizontalAlignment = 1, "撤销后合并区域的水平对齐未恢复为原来的常规")
+    ; 默认垂直对齐随 Excel 语言版本不同（中文版默认居中），以未参与合并的 A500 为准。
+    Assert(sheetMergeOpt.Range("A248:A249").VerticalAlignment = sheetMergeOpt.Range("A500").VerticalAlignment, "撤销后合并区域的垂直对齐未恢复原值")
     FileAppend("  - [PASS] 合并撤销 (RestoreUndoAction) 100% 完整还原原未合并状态与原始数据。`r`n", reportFile, "UTF-8")
 
     ; --------------------------------------------------------------------------

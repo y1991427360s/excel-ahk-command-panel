@@ -98,7 +98,6 @@ LoadIndirectString(source) {
 ; tip 为空表示“使用语言列表(推荐)”，即清除替代默认输入法。
 ; addToLanguage 非空时，先把该输入法加入这种语言的输入法列表（等同设置里“添加键盘”），再设为默认。
 SetDefaultInputMethod(tip, name, addToLanguage := "") {
-    global AutomationPanelGui
     title := "替代默认输入法"
     if (tip != "" && !RegExMatch(tip, "^[0-9A-Fa-f]{4}:[0-9A-Fa-f{}-]+$")
         || addToLanguage != "" && !RegExMatch(addToLanguage, "^[A-Za-z0-9-]+$")) {
@@ -122,8 +121,8 @@ SetDefaultInputMethod(tip, name, addToLanguage := "") {
         MsgBox("切换失败，当前设置未改变为“" . name . "”。`nPowerShell 退出码：" . exitCode, title, "Icon!")
         return
     }
-    if IsObject(AutomationPanelGui)
-        try AutomationPanelGui.Hide()
+    ; 入口可能在任一面板（或快捷键直接触发），统一关闭所有面板。
+    try ModernPanelHideAll()
     TrayTip((addToLanguage != "" ? "已添加到输入法列表，并" : "") . "默认输入法已改为：" . name
         . "`n之后新打开的窗口生效。", title, "Iconi Mute")
 }

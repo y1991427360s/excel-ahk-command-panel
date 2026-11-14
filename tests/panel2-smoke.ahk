@@ -72,6 +72,7 @@ RunPanel2Smoke() {
 
         ; 搜索：名称、拼音首字母、路径；筛选后匹配卡片补到前面，其余隐藏，暂停拖动
         P2Assert(Panel2PinyinInitials("华润伊吾") = "hryw" && Panel2PinyinInitials("东圣Oracle") = "dsoracle", "拼音首字母：" . Panel2PinyinInitials("华润伊吾"))
+        P2Assert(Panel2PinyinInitials("麒麟鑫") = "qlx", "GB2312 二级汉字拼音首字母：" . Panel2PinyinInitials("麒麟鑫"))
         search := AutomationPanel2Ui["search"]
         P2Assert(search.Visible, "常用软件页显示搜索框")
         P2Search(text) {
