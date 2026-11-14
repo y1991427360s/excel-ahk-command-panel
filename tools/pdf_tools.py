@@ -9,6 +9,7 @@
 用法：
   pdf_tools.py sizes --report 报告.txt --row 表格行.txt 路径1 [路径2 ...]
   pdf_tools.py merge 输出.pdf 输入1.pdf 输入2.pdf ...   （先写临时文件，成功后替换输出）
+  pdf_tools.py images 输出.pdf 图1.png 图2.jpg ...      （每张图一页 A4，横图横版，无损嵌入）
 """
 import argparse
 import io
@@ -238,6 +239,106 @@ def run_merge(args):
     return 0
 
 
+A4_PT = (595.276, 841.89)
+IMAGE_MARGIN_PT = 10 / MM_PER_PT   # 四周留白 10mm
+MIN_IMAGE_DPI = 96                  # 小图最多放大到 96dpi，避免截图被拉糊
+
+
+def png_idat_stream(image):
+    """把图片存成 PNG，取出 IDAT 数据：本身就是带 PNG 预测器的 zlib 流，可原样放进 PDF（无损、不重新压缩）。"""
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG", compress_level=6)
+    data = buffer.getvalue()
+    pos, idat = 8, []
+    while pos < len(data):
+        length = int.from_bytes(data[pos:pos + 4], "big")
+        kind = data[pos + 4:pos + 8]
+        if kind == b"IDAT":
+            idat.append(data[pos + 8:pos + 8 + length])
+        pos += 12 + length
+    return b"".join(idat)
+
+
+def load_image_object(path):
+    """返回 (PDF 图像字典, 数据流, 宽像素, 高像素)。JPEG 原样嵌入，其余转 PNG 流无损嵌入；透明背景铺白。"""
+    from PIL import Image, ImageOps
+
+    with Image.open(path) as source:
+        source.seek(0)  # 多帧 GIF/TIFF 只取第一帧
+        image = ImageOps.exif_transpose(source)
+        width, height = image.size
+        upright = source.getexif().get(0x0112, 1) == 1  # 无 EXIF 旋转标记才能原样嵌入
+        if source.format == "JPEG" and source.mode in ("RGB", "L") and upright:
+            with open(path, "rb") as handle:
+                stream = handle.read()
+            colors = 3 if source.mode == "RGB" else 1
+            space = "/DeviceRGB" if colors == 3 else "/DeviceGray"
+            return f"/ColorSpace {space} /BitsPerComponent 8 /Filter /DCTDecode", stream, width, height
+        if image.mode in ("RGBA", "LA", "PA") or (image.mode == "P" and "transparency" in image.info):
+            rgba = image.convert("RGBA")
+            image = Image.new("RGB", rgba.size, "white")
+            image.paste(rgba, mask=rgba.getchannel("A"))
+        elif image.mode not in ("RGB", "L"):
+            image = image.convert("L" if image.mode in ("1", "I", "I;16", "F") else "RGB")
+        colors = 3 if image.mode == "RGB" else 1
+        space = "/DeviceRGB" if colors == 3 else "/DeviceGray"
+        stream = png_idat_stream(image)
+        info = (f"/ColorSpace {space} /BitsPerComponent 8 /Filter /FlateDecode "
+                f"/DecodeParms << /Predictor 15 /Colors {colors} /BitsPerComponent 8 /Columns {width} >>")
+        return info, stream, width, height
+
+
+def image_page_layout(width_px, height_px):
+    """A4 页面，横图用横版；图片等比缩放进 10mm 边距内并居中。返回 (页宽, 页高, x, y, 绘制宽, 绘制高) pt。"""
+    page_w, page_h = A4_PT if height_px >= width_px else (A4_PT[1], A4_PT[0])
+    box_w, box_h = page_w - 2 * IMAGE_MARGIN_PT, page_h - 2 * IMAGE_MARGIN_PT
+    scale = min(box_w / width_px, box_h / height_px, 72 / MIN_IMAGE_DPI)
+    draw_w, draw_h = width_px * scale, height_px * scale
+    return page_w, page_h, (page_w - draw_w) / 2, (page_h - draw_h) / 2, draw_w, draw_h
+
+
+def run_images(args):
+    """每张图片一页拼成 PDF。先写临时文件，成功后替换输出。"""
+    objects = []  # 下标 i 对应对象号 i+3（1 为 Catalog，2 为 Pages）
+    page_ids = []
+    for path in args.inputs:
+        info, stream, width, height = load_image_object(path)
+        page_w, page_h, x, y, draw_w, draw_h = image_page_layout(width, height)
+        image_id = len(objects) + 3
+        objects.append(f"<< /Type /XObject /Subtype /Image /Width {width} /Height {height} {info} "
+                       f"/Length {len(stream)} >>".encode("ascii") + b"\nstream\n" + stream + b"\nendstream")
+        content = f"q {draw_w:.3f} 0 0 {draw_h:.3f} {x:.3f} {y:.3f} cm /Im0 Do Q".encode("ascii")
+        objects.append(f"<< /Length {len(content)} >>".encode("ascii") + b"\nstream\n" + content + b"\nendstream")
+        page_ids.append(len(objects) + 3)
+        objects.append((f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {page_w:.3f} {page_h:.3f}] "
+                        f"/Resources << /XObject << /Im0 {image_id} 0 R >> >> /Contents {image_id + 1} 0 R >>").encode("ascii"))
+
+    kids = " ".join(f"{pid} 0 R" for pid in page_ids)
+    all_objects = [b"<< /Type /Catalog /Pages 2 0 R >>",
+                   f"<< /Type /Pages /Kids [{kids}] /Count {len(page_ids)} >>".encode("ascii")] + objects
+
+    output = os.path.abspath(args.output)
+    temp_output = f"{output}.tmp-{os.getpid()}"
+    try:
+        with open(temp_output, "wb") as handle:
+            handle.write(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+            offsets = []
+            for number, body in enumerate(all_objects, start=1):
+                offsets.append(handle.tell())
+                handle.write(f"{number} 0 obj\n".encode("ascii") + body + b"\nendobj\n")
+            xref = handle.tell()
+            handle.write(f"xref\n0 {len(all_objects) + 1}\n0000000000 65535 f \n".encode("ascii"))
+            for offset in offsets:
+                handle.write(f"{offset:010d} 00000 n \n".encode("ascii"))
+            handle.write(f"trailer\n<< /Size {len(all_objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode("ascii"))
+    except Exception:
+        if os.path.exists(temp_output):
+            os.remove(temp_output)
+        raise
+    os.replace(temp_output, output)
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="command", required=True)
@@ -248,8 +349,12 @@ def main():
     merge = commands.add_parser("merge")
     merge.add_argument("output")
     merge.add_argument("inputs", nargs="+")
+    images = commands.add_parser("images")
+    images.add_argument("output")
+    images.add_argument("inputs", nargs="+")
     args = parser.parse_args()
-    return run_sizes(args) if args.command == "sizes" else run_merge(args)
+    handlers = {"sizes": run_sizes, "merge": run_merge, "images": run_images}
+    return handlers[args.command](args)
 
 
 if __name__ == "__main__":

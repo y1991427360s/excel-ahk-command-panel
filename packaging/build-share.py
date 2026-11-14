@@ -21,7 +21,8 @@ HERE = Path(__file__).resolve().parent
 PROJECT = HERE.parent
 PACKAGE_PREFIX = '自动化工具面板-'
 OLD_PACKAGE_PREFIXES = (PACKAGE_PREFIX, '表格工具面板-')
-FUNCTION_PATTERN = re.compile(r'^(\w+)\([^\n]*\) \{\n.*?^\}', re.M | re.S)
+# 函数头的 { 后面允许跟行尾注释（如 cable-sort.ahk 的 CableSortSaveCsv），否则提取不到、分享版会缺函数
+FUNCTION_PATTERN = re.compile(r'^(\w+)\([^\n]*\) \{[ \t]*(?:;[^\n]*)?\n.*?^\}', re.M | re.S)
 
 
 def default_output():
@@ -68,6 +69,13 @@ def build_panel_script():
     cable_globals = cable_globals[:cable_globals.index('\n\n')]
     if cable_globals not in body.replace('\r\n', '\n'):
         raise ValueError('share-panel.ahk 里的 CablePanel 全局变量与 src/cad-cable-panel.ahk 不一致')
+    # 电缆排序窗口（cable-sort.ahk，YSDL3 配套）：只读写 %TEMP%\AA-YSDL3 并把结果发回 CAD，朋友装了 CAD 分享包里的插件即可用；
+    # 顶部全局变量同样抄在 share-panel.ahk 里，这里核对。
+    sort_source = (PROJECT / 'src/cable-sort.ahk').read_text(encoding='utf-8-sig').replace('\r\n', '\n')
+    sort_globals = sort_source[sort_source.index('global CableSortJobPath'):]
+    sort_globals = sort_globals[:sort_globals.index('\n\n')]
+    if sort_globals not in body.replace('\r\n', '\n'):
+        raise ValueError('share-panel.ahk 里的 CableSort 全局变量与 src/cable-sort.ahk 不一致')
     for forbidden in ('CopyQ', 'Syncthing', 'Oracle-Sync', 'ys199', 'AA整合版本', 'D:\\', 'python', 'pypdf',
                       'OpenSelectedDwg', 'RunZwcadCommand', 'ReloadCadAaLsp', 'CadAi', 'GetProjectAtlas',
                       'TrustedDwg'):
@@ -78,8 +86,8 @@ def build_panel_script():
 
 def build_pdf_tools(payload, work):
     """把 tools/pdf_tools.py 打成单文件 pdf-tools.exe，朋友电脑不需要装 Python。"""
-    # 合并和读页面尺寸用不到图片、加密和科学计算库，排除后 exe 从约 40MB 降到十几 MB
-    excludes = ['PIL', 'numpy', 'cryptography', 'Crypto', 'tkinter', 'pandas', 'matplotlib', 'scipy', 'lxml', 'IPython']
+    # 用不到加密和科学计算库，排除后 exe 小很多；PIL 不能排除：“图片合并为 PDF”（images 子命令）要用它读图片
+    excludes = ['numpy', 'cryptography', 'Crypto', 'tkinter', 'pandas', 'matplotlib', 'scipy', 'lxml', 'IPython']
     subprocess.run([sys.executable, '-m', 'PyInstaller', '--onefile', '--noconsole', '--clean', '--noconfirm',
                     *[arg for name in excludes for arg in ('--exclude-module', name)],
                     '--name', 'pdf-tools', '--distpath', str(work / 'dist'), '--workpath', str(work / 'build'),

@@ -2,7 +2,7 @@
 
 ## 项目定位
 
-- 本项目是 Windows 上的 AutoHotkey v2 全局自动化面板，唯一入口为 `Ctrl+Shift+E`。
+- 本项目是 Windows 上的 AutoHotkey v2 全局自动化面板，唯一入口默认为 `Ctrl+Shift+E`，用户可在面板“快捷键”页改成其他组合键（配置项 `panel.open`）。
 - 主脚本是 `src/excel-command-panel.ahk`；`install.ps1` 创建启动项并直接运行该文件，不复制脚本副本。
 - 用户文档与使用方法以 `README.md` 为准；新增或修改用户流程时必须同步更新 README。
 
@@ -45,12 +45,36 @@
 - 桌面（Progman/WorkerW）在酷呆桌面运行时（`IsDesktopOrganizerRunning`）必须用 Ctrl+C，未运行时与资源管理器一样直接读 Shell 视图：酷呆桌面（Coodesker）接管桌面图标，系统桌面视图的 `GetSelection`/`SelectedItems` 停留在旧选中项（2026-11-06 实测读成 4 个文件，实际只选 1 个），代价是选中文件时图绳会多挂卡片。
 - 资源管理器窗口选区用 `GetShellViewSelectedFilePaths` 读取：`IShellBrowser::QueryActiveShellView` → `IFolderView2::GetSelection`，完全不碰剪贴板。Win11 多标签共用一个 `CabinetWClass`，必须用 `IOleWindow::GetWindow` 与 `ShellTabWindowClass1`（当前标签）比对；跨进程 `IShellView::GetItemObject` 取 IDataObject 会返回 E_FAIL，不要用。原因：任何剪贴板写入（Ctrl+C 复制文件、写回原剪贴板）都会被图绳 PicRope 等不认排除标记的工具挂成新卡片（2026-11-06 用户反馈）。只有 Shell 方式抛错才回退到 Ctrl+C：回退时不清空剪贴板，用 `GetClipboardSequenceNumber` 判断是否写入，变了才用 `RestoreClipboardWithoutHistory` 写回。
 - 合并 PDF 时用 `Ctrl+C` 取得选中文件后，按文件名自然排序（`StrCmpLogicalW`，与资源管理器“名称”排序一致）再合并，不依赖选择顺序；输出到首个 PDF 所在目录；通过临时 Python 脚本调用 `pypdf`，不修改源文件，覆盖目标前必须明确确认。
-- 合并 PDF 和统计图幅都只通过 `PdfToolCommand()` 调用 `tools\pdf_tools.py`（`merge` / `sizes` 子命令）；分享版在 `packaging\share-panel.ahk` 覆盖该函数改用包内 `pdf-tools.exe`，不要在这两个功能里直接写 `python`。统计图幅：短边定基本图幅、长边按 0.25 倍取加长倍数，列顺序与《图纸打印明细》表头（A0 ~ A4 共 23 列）一致；压缩包只解压到临时目录，不改源文件。改判定规则时用真实图纸 PDF 回归验证。
+- 合并 PDF、图片合并为 PDF 和统计图幅都只通过 `PdfToolCommand()` 调用 `tools\pdf_tools.py`（`merge` / `images` / `sizes` 子命令；`images` 自写最小 PDF，PNG 以 IDAT 流 + Predictor 15 无损嵌入、JPEG 原样 DCTDecode，不引入 img2pdf/PyMuPDF）；分享版在 `packaging\share-panel.ahk` 覆盖该函数改用包内 `pdf-tools.exe`，不要在这两个功能里直接写 `python`。统计图幅：短边定基本图幅、长边按 0.25 倍取加长倍数，列顺序与《图纸打印明细》表头（A0 ~ A4 共 23 列）一致；压缩包只解压到临时目录，不改源文件。改判定规则时用真实图纸 PDF 回归验证。
 - MP4 转 GIF 只通过 `tools\video_tools.py gif` 转换（ffmpeg 两遍调色板，优先 `imageio-ffmpeg` 自带 ffmpeg），输出同目录同名 `.gif`，先写临时文件再替换，覆盖前必须确认，不改源视频；分享版未包含。“压缩视频”同样只走 `video_tools.py compress`（x264 CRF，输出到源文件夹下“压缩视频\原名.mp4”，文件夹名在 `video_tools.py` 的 `COMPRESS_FOLDER` 与面板 `CompressSelectedVideos` 两处须一致，结果不比原文件小时不保留）；两个按钮共用 `GetSelectedVideoPaths` / `RunVideoTool`，不要再各写一份。用脚本改这几处源码时注意 `\video_tools`、`\video-tool-` 里的 `\v` 会被转义成控制字符（2026-11-06 踩坑），优先用编辑工具。
 - Word 转 PDF 支持 `.doc`、`.docx`、`.docm`，通过 Microsoft Word COM 以只读方式导出到源文件同目录；覆盖同名 PDF 前必须明确确认，禁止保存或修改源文档。
 - Excel 转 PDF 支持 `.xls`、`.xlsx`、`.xlsm`、`.xlsb`，通过 Microsoft Excel COM 将整个工作簿（含隐藏工作表）导出为一个同目录同名 PDF；工作簿只读打开、不保存，临时显示的隐藏工作表必须恢复原状态，覆盖目标前必须明确确认。
+- PPT 转 PDF 支持 `.ppt`、`.pptx`、`.pptm`、`.pps`、`.ppsx`，通过 PowerPoint COM `Presentations.Open(路径, -1, 0, 0)`（只读、无窗口）+ `SaveAs(临时文件, 32)` 导出到同目录同名 PDF，再替换目标；不保存源文件，覆盖前必须确认。PowerPoint 是单实例程序，转换前已在运行时禁止 `Quit()`，只关闭本次打开的演示文稿。
+- HTML 转 PDF 只通过 `tools\html_to_pdf.py --report` 转换（Playwright `channel="msedge"`，A4、`print_background`、`prefer_css_page_size`；无 Playwright 退回 `msedge --print-to-pdf`）。它单独成文件，不并入 `pdf_tools.py`，免得分享版 `pdf-tools.exe` 打进 Playwright。退回路径里 Edge 加载失败时退出码仍为 0，必须以是否生成 PDF 判断，且传给 Edge 的路径必须是绝对路径（相对路径会写到 Edge 的工作目录，报拒绝访问）。
 - 读取 `CF_HDROP` 时必须在约 1 秒内每 50ms 重试：资源管理器分多次写入剪贴板格式，`ClipWait` 返回时可能还没有 `CF_HDROP`（错误码 1418），剪贴板也可能仍被资源管理器或 CopyQ 占用（`OpenClipboard` 错误码 5）；只读一次会让首次打开面板时文件类按钮变灰（2026-11-04 实测）。
 - 面板打开时只读取一次当前窗口选区并保存选区快照；面板功能统一使用该快照，不在按钮执行时重读，也不用可能指向旧标签的 Shell `SelectedItems`。Word 转换按路径去重，多文件时先展示清单确认。
+
+## 自定义快捷键边界
+
+- `src/custom-hotkeys.ahk`：给面板功能绑定全局快捷键。按作用域（每个面板一个）分开：各有功能清单、配置文件、入口快捷键和设置窗口，设置窗口与“快捷键”页只列本作用域的功能。本文件只定义自动化面板作用域 `main`（配置 `%LOCALAPPDATA%\AutoHotkeyPanel\hotkeys.ini`），不得引用 2号面板；其他面板在自己的文件里用 `CustomHotkeyAddScope` 登记。所有作用域共用一张绑定表，组合键全进程唯一。快捷键只是“不开面板直接点按钮”，触发时必须先调 `CaptureAutomationContext()`（与打开面板共用）取选区快照，再经 `RunPanelCommand` 执行，不得另写一套读选区逻辑。
+- 新增自动化面板按钮时同步在 `CustomHotkeyCommands()` 登记；登记的 id 写在用户配置里，改名只改显示名，不改 id。
+- 打开面板也是一条可改的快捷键（id `panel.open`，回调 `OpenAutomationPanelFromHotkey`），不再用 `^+e::` 写死：启动时先注册它，配置无效或被清除时回退 `Ctrl+Shift+E`，任何时候都必须有入口。界面和提示文字里的面板快捷键一律用 `AutomationPanelHotkeyText()`；分享版在 `share-panel.ahk` 覆盖该函数固定返回 `Ctrl+Shift+E`。
+- 所有自定义快捷键用 `HotIf(CustomHotkeyCriterion)` 注册，设置窗口在前台时暂停；改绑走 `CustomHotkeyRebind`，新键失败要恢复旧键。
+- 保留组合键（`Ctrl+Z`、`Ctrl+Tab`、`Ctrl+Shift+Tab`）不得分配；不带 Ctrl/Alt/Win 的普通键不允许（F1~F24 除外）；同一组合键不能分给两个功能。启动时无效条目只记日志，不弹窗。
+- 回归：`tests/custom-hotkeys-smoke.ahk`，运行前把 `LOCALAPPDATA` 指到含 `hotkey-smoke` 的临时目录（测试会自检，防止改到真实配置）。
+
+## 2号自动化面板边界
+
+- `modern-panel-ui.ahk` 为此新增的通用能力（自动化面板与分享版也可用）：元素回调 `onDoubleClick` / `onRightClick`；拖动（元素 `dragGroup` + `ui["onDragMove"]` / `ui["onDragEnd"]`，拖动中 `SetCapture`，被拖元素最后画、用 `dragStyle`）；滚动区（`ModernPanelAddScrollRegion`，元素 `scroll` 归区，滚轮滚动并画细滚动条）；缓动（`ModernPanelAnimate`，元素 `tx/ty`）；样式键 `shadow`（1 常态 / 2 悬停 / 3 拖动）、`image`（GDI+ 位图）、`folder`（彩色文件夹图标的主色）、`imageSize`、`subtext` / `subColor`。系统图标用 `ModernPanelFileIcon` 取（48px，按路径缓存）。踩坑：GDI+ 用外部内存创建或 `GdipCloneBitmapAreaI` 克隆的位图会一直引用那块内存，内存释放后会出噪点甚至访问越界，必须让 GDI+ 自己分配再 `LockBits` 拷像素；单独加载组件文件做测试时要加 `#Warn All, StdOut`，否则缺函数的警告框会弹到用户屏幕上。
+
+- 个人专用面板，`src/panel2.ahk`，默认 `Alt+Q`。外观复用 `modern-panel-ui.ahk`，与自动化面板同进程但相互独立：自动化面板的源码（`excel-command-panel.ahk`、`custom-hotkeys.ahk`、`modern-panel-ui.ahk`、`share-panel.ahk`）除 `#Include panel2.ahk` 一行外不得出现 2号面板的任何引用；2号面板自带 `#HotIf` 切页热键和托盘项。面板互斥由 `ModernPanelCreate` 销毁旧的非常驻面板、`RunPanelCommand` 调 `ModernPanelHideAll()` 实现。
+- 快捷键自成作用域 `panel2`（`Panel2HotkeysInit` 延后一拍登记，配置 `panel2-hotkeys.ini`，入口 `panel2.open` 默认 `!q`），只在 2号面板“快捷键”页设置。可绑定：入口、MP4 转 GIF、压缩视频、HTML 转 PDF、每个常用软件 / 文件夹（id `panel2.shortcut.<类型+路径的 FNV-1a 哈希>`，命令带 `noContext` 不读选区；删除条目时同时注销并保存）。
+- 搜索：常用软件 / 文件夹页右上角的输入框是唯一的子控件（Edit，`-E0x200`、底色同圆角框），所以 2号面板窗口必须带 `+0x2000000`（WS_CLIPCHILDREN），否则自绘画布会盖住它。筛选在 `Panel2ApplySearch`：给卡片设 `hidden`（`ModernPanelIsVisible` 会跳过）、匹配项按序设 `tx/ty` 补位、重算滚动区，有搜索词时删掉 `dragGroup` 暂停拖动。匹配规则在 `Panel2SearchMatch`（名称 / 拼音首字母 / 2 字以上路径，多词全中），拼音首字母 `Panel2PinyinInitials` 用 CP936 区位码分段。回车、上下键、Esc 由 `#HotIf Panel2SearchKeysActive()` 热键处理（输入框会吞掉 Esc，面板的 Escape 事件收不到）。测试按真实按键时注意：截图用的 PowerShell 等会短暂抢走前台，按键前要重新激活面板。
+- 右键菜单是自绘弹窗（`Panel2ShortcutMenu`，`ModernPanelCreate(..., keep=true)`，`-Caption +ToolWindow +E0x08000000` 不抢焦点、`+Owner` 2号面板），不要换回系统 `Menu`（用户嫌难看）。关闭由 60ms 定时器 `Panel2PopupWatch` 判断：菜单外新按下鼠标、`Esc`、面板隐藏或失去前台；`Panel2SearchEscape` / `Panel2OnEscape` 在菜单开着时只关菜单。局部变量别叫 `menu`（与内置 `Menu` 类同名会触发警告）。
+- 不进分享包：分享版不得引用 `Panel2*` / `AutomationPanel2*` 函数。
+- 2026-11-14 起默认输入法、MP4 转 GIF、压缩视频、HTML 转 PDF 的按钮只在 2号面板，自动化面板不再放；实现函数仍在原文件，规则不变。
+- 快捷方式清单在 `%LOCALAPPDATA%\AutoHotkeyPanel\panel2-shortcuts.tsv`（带 BOM 的 UTF-8，`类型<Tab>名称<Tab>路径[<Tab>颜色序号]`），写入先写临时文件再替换；管理按钮（添加、右键菜单）不关闭面板，改完用 `Panel2Build(page, true)` 原位重建。卡片两列（`Panel2GridLayout`），样式由 `Panel2CardStyle` 统一生成（柔和底色 + 主色，配色表 `Panel2Palette`，按路径自动分配，同一路径颜色固定）。拖动排序：卡片设 `dragGroup`，`Panel2OnDragMove` 按鼠标格子把卡片插入新位置、其余卡片设 `tx/ty` 缓动让位，`Panel2OnDragEnd` 用 `Panel2SaveOrder` 只重排同类型条目。
+- 回归：`tests/panel2-smoke.ahk`，`LOCALAPPDATA` 指到含 `panel2-smoke` 的临时目录。
 
 ## AI 改 CAD 文字边界
 

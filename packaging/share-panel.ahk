@@ -19,6 +19,13 @@ global CablePanelState := Map("ui", "", "data", "", "floor", "", "curFloor", "",
     , "stamp", 0, "closedDwg", "", "maxScroll", 0, "pos", "", "w", 440, "h", 760
     , "plan", "", "view", "", "drag", "", "pick", "", "down", "", "reveal", "", "cabRows", [], "adjustUi", "")
 CablePanelInit()
+; 电缆排序（YSDL3）：朋友装了 AutoCAD 分享包里的插件后，运行 YSDL3 自动弹出排序窗口；
+; 与 cable-sort.ahk 顶部的全局变量保持一致（build-share.py 构建时核对）
+global CableSortJobPath := EnvGet("TEMP") . "\AA-YSDL3\job.txt"
+global CableSortResultPath := EnvGet("TEMP") . "\AA-YSDL3\result.txt"
+global CableSortLastTime := ""
+global CableSortUi := ""
+CableSortInit()
 A_IconTip := "自动化工具面板（分享版）：Ctrl+Shift+E"
 A_TrayMenu.Add("退出自动化工具面板", (*) => ExitApp())
 if ShareSelfTest {
@@ -65,6 +72,11 @@ CycleSharePanelPage(step) {
             index := i
     index := Mod(index - 1 + step + pages.Length, pages.Length) + 1
     SelectAutomationPanelPage(AutomationPanelUi, pages[index]["key"])
+}
+
+; 分享版不带自定义快捷键，固定用 Ctrl+Shift+E（覆盖 custom-hotkeys.ahk 里的同名函数）。
+AutomationPanelHotkeyText() {
+    return "Ctrl+Shift+E"
 }
 
 ShowSharePanel() {
@@ -158,6 +170,10 @@ ShowSharePanel() {
         ModernPanelSection(ui, "电缆定义（DDFD）")
         ModernPanelRow(ui, ["电缆定义总览", CablePanelOpen, true, Chr(0xE8A1)])
         ModernPanelNote(ui, "需要 CAD 里已加载 DDFD 电缆向导插件。运行 DDFD 后总览自动弹出并实时刷新，点条目在 CAD 里定位。", 2)
+        ModernPanelSpace(ui, 6)
+        ModernPanelSection(ui, "电缆清册排序导出（YSDL3）")
+        ModernPanelRow(ui, ["打开 CSV 重新整理", CableSortOpenCsv, true, Chr(0xE8E5)])
+        ModernPanelNote(ui, "需要 CAD 里已加载 AA 整合插件：运行 YSDL3 后排序窗口自动弹出。导出过的 CSV 可在这里打开重新整理、另存新 CSV，不需要 CAD。", 2)
 
         ModernPanelBeginPage(ui, "rename", contentX, contentY, contentW)
         ModernPanelSection(ui, "添加")
@@ -183,7 +199,9 @@ ShowSharePanel() {
         ModernPanelSection(ui, "转成 PDF")
         ModernPanelRow(ui, ["Word 转 PDF", ConvertSelectedWordFilesToPdf, hasFiles, Chr(0xE8A5)]
             , ["Excel 转 PDF", ConvertSelectedExcelFilesToPdf, hasFiles, Chr(0xE80A)])
-        ModernPanelNote(ui, "需要已安装 Microsoft Word / Excel。转换后保存为同目录同名 PDF，Excel 会导出整个工作簿；源文件只读打开、不修改，覆盖前会先确认。", 2)
+        ModernPanelRow(ui, ["PPT 转 PDF", ConvertSelectedPowerPointFilesToPdf, hasFiles, Chr(0xE8A1)]
+            , ["图片合并为 PDF", MergeSelectedImagesToPdf, hasFiles, Chr(0xE91B)])
+        ModernPanelNote(ui, "Word / Excel / PPT 转换需要已安装 Microsoft Office 对应程序，保存为同目录同名 PDF，Excel 导出整个工作簿，源文件只读打开、不修改，覆盖前会先确认。图片按文件名顺序每张一页 A4（横图横版），合成到首张图片所在文件夹。", 3)
         ModernPanelSpace(ui, 6)
         ModernPanelSection(ui, "版本")
         ModernPanelRow(ui, ["找出最新版本（同一文件的多个副本）", FindLatestFileVersions, hasFiles, Chr(0xE81C)])

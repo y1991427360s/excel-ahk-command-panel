@@ -42,6 +42,9 @@ RunSmoke() {
         ["安全稳定控制装置A柜", "1AW-133", "至X柜", "4×4", "4"],             ; 4 单行（让 1AW 能推断出起点）
     ]
     job := CableSortParseJob(JobText([["公用部分", rows0], ["主变部分", rows1]]))
+    Check(job["cad"] = "ZWCAD", "没有 CAD 行时默认中望")
+    jobAc := CableSortParseJob(StrReplace(JobText([["公用部分", rows0]]), "MODE`t", "CAD`tACAD`nMODE`t"))
+    Check(jobAc["cad"] = "ACAD" && jobAc["boxes"].Length = 1, "AutoCAD 任务带 CAD<TAB>ACAD 行")
     Check(job["boxes"].Length = 2 && job["boxes"][1]["rows"].Length = 7, "解析框和行")
     cables := CableSortBuild(job)
     ids := ""

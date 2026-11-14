@@ -40,7 +40,7 @@ CableSortParseId(key) {
 
 ; 读 job.txt 文本；格式不对时抛出错误
 CableSortParseJob(text) {
-    job := Map("id", "", "dwg", "", "mode", "", "boxes", [])
+    job := Map("id", "", "dwg", "", "mode", "", "cad", "ZWCAD", "boxes", [])
     head := false
     for line in StrSplit(text, "`n", "`r") {
         p := StrSplit(line, "`t")
@@ -55,6 +55,8 @@ CableSortParseJob(text) {
                 job["dwg"] := p.Length >= 2 ? p[2] : ""
             case "MODE":
                 job["mode"] := p.Length >= 2 ? p[2] : ""
+            case "CAD":         ; AutoCAD 版插件写 CAD<TAB>ACAD；中望版不写，默认 ZWCAD
+                job["cad"] := (p.Length >= 2 && p[2] = "ACAD") ? "ACAD" : "ZWCAD"
             case "BOX":
                 if (p.Length >= 4)
                     job["boxes"].Push(Map("title", p[3], "count", Integer(p[4]), "rows", []))

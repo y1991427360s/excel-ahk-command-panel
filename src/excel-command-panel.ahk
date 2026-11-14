@@ -13,6 +13,9 @@ Persistent
 #Include cad-ai-text.ahk
 #Include cable-sort.ahk
 #Include file-latest-version.ahk
+#Include custom-hotkeys.ahk
+; 个人专用的 2号自动化面板：自带快捷键、托盘项和配置，自动化面板的代码不引用它；分享版不含此文件
+#Include panel2.ahk
 
 global AutomationPanelGui := ""
 global AutomationContextHwnd := 0
@@ -30,6 +33,7 @@ global AcadAaLspPath := "D:\Syncthing\Oracle-Sync\LISP\AutoCAD2018_lisp\AA整合
 global TrustedDwgScript := "D:\Syncthing\Oracle-Sync\LISP\AutoCAD2018_lisp\tools\trusted_dwg_batch.py"
 LogPanelDiagnostic("脚本初始化启动", "PID=" . ProcessExist() . "; ScriptHwnd=" . A_ScriptHwnd . "; Class=" . WinGetClass(A_ScriptHwnd))
 CablePanelInit()
+CustomHotkeysInit()
 
 LogPanelDiagnostic(eventName, details := "") {
     static logPath := ""
@@ -46,17 +50,7 @@ LogPanelDiagnostic(eventName, details := "") {
     }
 }
 
-^+e:: {
-    static isOpening := false
-    if isOpening
-        return
-    isOpening := true
-    try {
-        ShowAutomationPanel()
-    } finally {
-        SetTimer(() => isOpening := false, -300)
-    }
-}
+; 打开面板的快捷键默认 Ctrl+Shift+E，可在面板“快捷键”页修改，由 CustomHotkeysInit() 注册（见 custom-hotkeys.ahk）。
 
 #HotIf WinActive("ahk_exe EXCEL.EXE") && ExcelCommandUndoStack.Length > 0
 $^z::UndoExcelCommandPanelAction()
@@ -79,25 +73,7 @@ ShowAutomationPanel() {
     global AutomationSpreadsheetSelectionContext
     global SelectedDwgPath
 
-    AutomationContextHwnd := WinExist("A")
-    try {
-        contextClass := WinGetClass("ahk_id " . AutomationContextHwnd)
-    } catch {
-        contextClass := "无法读取窗口类名"
-    }
-    LogPanelDiagnostic("面板启动", "contextHwnd=" . AutomationContextHwnd . "; class=" . contextClass)
-    AutomationSelectedFilePaths := []
-    if (contextClass = "CabinetWClass" || contextClass = "ExploreWClass"
-        || contextClass = "Progman" || contextClass = "WorkerW")
-        AutomationSelectedFilePaths := DeduplicateSelectedFilePaths(
-            ReadExplorerSelectionSnapshot(AutomationContextHwnd)
-        )
-    else
-        AutomationSelectedFilePaths := GetProjectAtlasSelectedFiles(AutomationContextHwnd)
-    LogPanelDiagnostic("面板选区快照", "pathCount=" . AutomationSelectedFilePaths.Length
-        . (AutomationSelectedFilePaths.Length ? "`r`n" . JoinLines(AutomationSelectedFilePaths) : "`r`n快照为空"))
-    AutomationSpreadsheetSelectionContext := CaptureSpreadsheetSelectionContext(AutomationContextHwnd)
-    SelectedDwgPath := GetSelectedDwgPath()
+    CaptureAutomationContext()
 
     if IsObject(AutomationPanelGui)
         try AutomationPanelGui.Destroy()
@@ -119,7 +95,7 @@ ShowAutomationPanel() {
         ModernPanelLabelAt(ui, 0, 0, 188, 586, "", sidebarStyle)
     }
     ModernPanelLabelAt(ui, 26, 20, 146, 26, "自动化工具", ModernPanelTextStyle(colors["text"], 13, true))
-    ModernPanelLabelAt(ui, 26, 46, 146, 18, "Ctrl+Shift+E", ModernPanelTextStyle(colors["secondary"], 9))
+    ModernPanelLabelAt(ui, 26, 46, 146, 18, AutomationPanelHotkeyText(), ModernPanelTextStyle(colors["secondary"], 9))
 
     navItems := Map()
     navY := 84
@@ -245,7 +221,7 @@ ShowAutomationPanel() {
         , ["将 ML 替换为目录", ReplaceTextInSelectedFileNames, hasFiles, Chr(0xE8B7)])
     ModernPanelNote(ui, hasFiles
         ? "将处理选中的 " . fileCount . " 个文件，文件夹会被跳过。改名前会显示预览并要求确认，扩展名保持不变。"
-        : "请先在资源管理器或桌面选中文件，再按 Ctrl+Shift+E。改名前会显示预览并要求确认。")
+        : "请先在资源管理器或桌面选中文件，再按 " . AutomationPanelHotkeyText() . "。改名前会显示预览并要求确认。")
 
     ModernPanelBeginPage(ui, "files", contentX, contentY, contentW)
     ModernPanelSection(ui, "转换与合并")
@@ -253,32 +229,45 @@ ShowAutomationPanel() {
         , ["统计图幅", CountSelectedDrawingSheetSizes, hasFiles, Chr(0xE9D2)])
     ModernPanelRow(ui, ["Word 转 PDF", ConvertSelectedWordFilesToPdf, hasFiles, Chr(0xE8A5)]
         , ["Excel 转 PDF", ConvertSelectedExcelFilesToPdf, hasFiles, Chr(0xE80A)])
-    ModernPanelRow(ui, ["MP4 转 GIF", ConvertSelectedVideosToGif, hasFiles, Chr(0xE714)]
-        , ["压缩视频", CompressSelectedVideos, hasFiles, Chr(0xE73F)])
-    ModernPanelRow(ui, ["找出最新版本（同一文件的多个副本）", FindLatestFileVersions, hasFiles, Chr(0xE81C)])
-    ModernPanelNote(ui, "PDF 按文件名顺序合并到首个 PDF 所在文件夹；统计图幅可选 PDF、文件夹或 rar/zip/7z。Word、Excel、视频转为同目录同名 PDF / GIF，压缩视频放进同目录新建的“压缩视频”文件夹，覆盖前会确认。", 3)
+    ModernPanelRow(ui, ["PPT 转 PDF", ConvertSelectedPowerPointFilesToPdf, hasFiles, Chr(0xE8A1)]
+        , ["图片合并为 PDF", MergeSelectedImagesToPdf, hasFiles, Chr(0xE91B)])
+    ModernPanelRow(ui, ["找出最新版本", FindLatestFileVersions, hasFiles, Chr(0xE81C)])
+    ModernPanelNote(ui, "PDF、图片均按文件名顺序合并到首个文件所在文件夹（图片每张一页 A4，横图横版）；统计图幅可选 PDF、文件夹或 rar/zip/7z。Word、Excel、PPT 转为同目录同名 PDF，覆盖前会确认。", 4)
 
-    ModernPanelBeginPage(ui, "ime", contentX, contentY, contentW)
-    ModernPanelSection(ui, "替代默认输入法")
-    currentTip := GetDefaultInputMethodOverride()
-    ModernPanelRow(ui, ["使用语言列表(推荐)" . (currentTip = "" ? "（当前）" : "")
-        , SetDefaultInputMethod.Bind("", "使用语言列表(推荐)"), currentTip != "", Chr(0xE8C4)])
-    for method in GetInstalledInputMethods() {
-        isCurrent := method["tip"] = currentTip
-        ModernPanelRow(ui, [method["name"] . (isCurrent ? "（当前）" : method["added"] ? "" : "（未添加）")
-            , SetDefaultInputMethod.Bind(method["tip"], method["name"], method["added"] ? "" : method["language"])
-            , !isCurrent, Chr(0xE765)])
+    ModernPanelBeginPage(ui, "hotkeys", contentX, contentY, contentW)
+    ModernPanelSection(ui, "自定义快捷键")
+    ModernPanelRow(ui, ["设置快捷键…", OpenCustomHotkeyWindow, true, Chr(0xE713)])
+    ModernPanelNote(ui, "给任意功能按钮绑定全局快捷键：先选中单元格或文件，直接按快捷键执行，不用打开面板。需要输入的功能照常弹输入框。", 3)
+    assignedHotkeys := CustomHotkeyAssignedList()
+    ModernPanelSection(ui, "已设置（" . assignedHotkeys.Length . " 个）")
+    if !assignedHotkeys.Length {
+        ModernPanelCard(ui, "还没有设置快捷键", colors["secondary"], Chr(0xE765))
+    } else {
+        maxShown := 8
+        for index, item in assignedHotkeys {
+            if (index > maxShown) {
+                ModernPanelLabelAt(ui, contentX + 6, ui["y"], contentW - 6, 24
+                    , "…另有 " . (assignedHotkeys.Length - maxShown) . " 个，完整列表见设置窗口", ModernPanelTextStyle(colors["secondary"], 9))
+                ui["y"] += 28
+                break
+            }
+            ModernPanelLabelAt(ui, contentX, ui["y"], contentW, 30, "", ModernPanelStyle(colors["info"], colors["text"]))
+            ModernPanelLabelAt(ui, contentX + 12, ui["y"], 250, 30, item["name"], ModernPanelTextStyle(colors["text"], 10, false, "left"))
+            ModernPanelLabelAt(ui, contentX + 262, ui["y"], 158, 30, item["key"], ModernPanelTextStyle(colors["secondary"], 10, true, "right"))
+            ui["y"] += 34
+        }
     }
-    ModernPanelNote(ui, "列表随安装的输入法自动更新；“未添加”的会先加入输入法列表再设为默认。切换后对新打开的窗口生效。", 3)
 
     ModernPanelBeginPage(ui, "help", contentX, contentY, contentW)
     ModernPanelSection(ui, "使用方法")
     ModernPanelNote(ui
         , "1. 先在 Excel / WPS 里选中单元格，或在资源管理器、桌面里选中文件。`n"
-        . "2. 按 Ctrl+Shift+E 打开面板，会自动切到对应页面。`n"
+        . "2. 按 " . AutomationPanelHotkeyText() . " 打开面板，会自动切到对应页面。`n"
         . "3. 点击按钮执行；没有对应选区的按钮会变灰。", 4)
     ModernPanelSection(ui, "撤销与保存")
     ModernPanelNote(ui, "表格操作不会自动保存。Excel 中可直接 Ctrl+Z 撤销面板操作；WPS 请用“表格工具”里的撤销按钮。“重复上次操作”把上一次表格操作（含当时输入的文字或数字）直接套用到新选区。", 4)
+    ModernPanelSection(ui, "快捷键")
+    ModernPanelNote(ui, "在“快捷键”页可给常用功能设置全局快捷键，选中内容后直接按下即可执行，不用打开面板。", 2)
 
     SelectAutomationPanelPage(ui, panelContext["page"], false)
 
@@ -291,6 +280,34 @@ ShowAutomationPanel() {
     panel.Show("w656 h586 Center")
 }
 
+; 读取当前前台窗口的选区快照（文件、表格、DWG）。打开面板和自定义快捷键共用，按钮执行时只用这份快照。
+CaptureAutomationContext() {
+    global AutomationContextHwnd
+    global AutomationSelectedFilePaths
+    global AutomationSpreadsheetSelectionContext
+    global SelectedDwgPath
+
+    AutomationContextHwnd := WinExist("A")
+    try {
+        contextClass := WinGetClass("ahk_id " . AutomationContextHwnd)
+    } catch {
+        contextClass := "无法读取窗口类名"
+    }
+    LogPanelDiagnostic("读取选区", "contextHwnd=" . AutomationContextHwnd . "; class=" . contextClass)
+    AutomationSelectedFilePaths := []
+    if (contextClass = "CabinetWClass" || contextClass = "ExploreWClass"
+        || contextClass = "Progman" || contextClass = "WorkerW")
+        AutomationSelectedFilePaths := DeduplicateSelectedFilePaths(
+            ReadExplorerSelectionSnapshot(AutomationContextHwnd)
+        )
+    else
+        AutomationSelectedFilePaths := GetProjectAtlasSelectedFiles(AutomationContextHwnd)
+    LogPanelDiagnostic("面板选区快照", "pathCount=" . AutomationSelectedFilePaths.Length
+        . (AutomationSelectedFilePaths.Length ? "`r`n" . JoinLines(AutomationSelectedFilePaths) : "`r`n快照为空"))
+    AutomationSpreadsheetSelectionContext := CaptureSpreadsheetSelectionContext(AutomationContextHwnd)
+    SelectedDwgPath := GetSelectedDwgPath()
+}
+
 AutomationPanelPages() {
     static pages := [
         Map("key", "table", "title", "表格工具", "icon", Chr(0xE80A)),
@@ -298,7 +315,7 @@ AutomationPanelPages() {
         Map("key", "cadai", "title", "CAD 文字", "icon", Chr(0xE945)),
         Map("key", "rename", "title", "批量改名", "icon", Chr(0xE8AC)),
         Map("key", "files", "title", "文件处理", "icon", Chr(0xE8A5)),
-        Map("key", "ime", "title", "默认输入法", "icon", Chr(0xE765)),
+        Map("key", "hotkeys", "title", "快捷键", "icon", Chr(0xE713)),
         Map("key", "help", "title", "使用说明", "icon", Chr(0xE897))
     ]
     return pages
@@ -317,8 +334,8 @@ SelectAutomationPanelPage(ui, page, remember := true, *) {
         }
     }
     ModernPanelShowPage(ui, page)
-    ; “使用说明”不记忆，避免下次无选区时直接停在说明页。
-    if (remember && page != "help")
+    ; “使用说明”“快捷键”不记忆，避免下次无选区时直接停在说明页。
+    if (remember && page != "help" && page != "hotkeys")
         AutomationPanelLastPage := page
 }
 
@@ -366,7 +383,7 @@ DescribeAutomationPanelContext() {
         for filePath in AutomationSelectedFilePaths {
             SplitPath(filePath, , , &extension)
             ; 选中文件夹也进“文件处理”页：批量改名会跳过文件夹，而找出最新版本、统计图幅都按文件夹处理
-            if (DirExist(filePath) || RegExMatch(extension, "i)^(pdf|docx?|docm|xlsx?|xlsm|xlsb|rar|zip|7z|mp4|mov|mkv|avi|webm|m4v|wmv|flv)$"))
+            if (DirExist(filePath) || RegExMatch(extension, "i)^(pdf|docx?|docm|xlsx?|xlsm|xlsb|rar|zip|7z|png|jpe?g|bmp|gif|tiff?|webp|pptx?|pptm|ppsx?)$"))
                 documentCount += 1
         }
         SplitPath(AutomationSelectedFilePaths[1], &firstName)
@@ -390,7 +407,7 @@ DescribeAutomationPanelContext() {
 
     return Map(
         "title", "未检测到选区",
-        "detail", "先在 Excel / WPS 或资源管理器中选中内容，再按 Ctrl+Shift+E。",
+        "detail", "先在 Excel / WPS 或资源管理器中选中内容，再按 " . AutomationPanelHotkeyText() . "。",
         "isError", false,
         "page", AutomationPanelLastPage
     )
@@ -507,6 +524,7 @@ IsSpreadsheetNativeNumber(value) {
 RunPanelCommand(callback) {
     global AutomationPanelGui
     try AutomationPanelGui.Hide()
+    ModernPanelHideAll()   ; 同时隐藏其他非常驻面板（如另一个面板）
     try callback.Call()
     catch as err
         MsgBox("操作失败：" . err.Message, "自动化工具面板", "Icon!")
@@ -1498,7 +1516,7 @@ OpenSelectedDwg(viewer) {
 
     title := "打开 DWG 图纸"
     if (SelectedDwgPath = "" || !FileExist(SelectedDwgPath)) {
-        MsgBox("选中的 DWG 文件已不存在或无法访问。请重新选择图纸后再按 Ctrl+Shift+E。", title, "Icon!")
+        MsgBox("选中的 DWG 文件已不存在或无法访问。请重新选择图纸后再按 " . AutomationPanelHotkeyText() . "。", title, "Icon!")
         return
     }
 
@@ -1621,7 +1639,7 @@ GetActiveCadDocumentContext(title) {
             return ""
         }
         if (found.Length > 1) {
-            MsgBox("中望 CAD 和 AutoCAD 都在运行。请先切换到要操作的 CAD 窗口，再按 Ctrl+Shift+E。", title, "Icon!")
+            MsgBox("中望 CAD 和 AutoCAD 都在运行。请先切换到要操作的 CAD 窗口，再按 " . AutomationPanelHotkeyText() . "。", title, "Icon!")
             return ""
         }
         target := found[1]["target"]
@@ -2380,7 +2398,7 @@ GetSpreadsheetContext(title := "表格工具", showError := true) {
 
     if (IsObject(excelApp) && IsObject(wpsApp)) {
         if showError
-            MsgBox("Excel 和 WPS 表格都在运行。请先切换到需要操作的表格窗口，再按 Ctrl+Shift+E。", title, "Icon!")
+            MsgBox("Excel 和 WPS 表格都在运行。请先切换到需要操作的表格窗口，再按 " . AutomationPanelHotkeyText() . "。", title, "Icon!")
         return ""
     }
     if IsObject(excelApp)
@@ -2475,7 +2493,7 @@ GetSpreadsheetSelectionContext(title) {
                 "selection", selection
             )
         } catch {
-            MsgBox("打开面板时的原选区已经失效。请回到表格重新选中单元格，再按 Ctrl+Shift+E。", title, "Icon!")
+            MsgBox("打开面板时的原选区已经失效。请回到表格重新选中单元格，再按 " . AutomationPanelHotkeyText() . "。", title, "Icon!")
             return ""
         }
     }
@@ -3034,6 +3052,73 @@ MergeSelectedPdfFiles() {
         TrayTip("已合并 " . pdfFiles.Length . " 个 PDF 文件。", title, 1)
     } catch as err {
         MsgBox("PDF 合并失败：`n`n" . err.Message, title, "Icon!")
+    }
+}
+
+; 选中的图片按文件名自然排序，每张一页拼成 PDF（pdf_tools images：A4、横图横版、无损嵌入）。
+MergeSelectedImagesToPdf() {
+    title := "图片合并为 PDF"
+    imageFiles := []
+    for _, path in GetSelectedFilePaths() {
+        if DirExist(path)
+            continue
+        SplitPath(path, , , &extension)
+        if RegExMatch(extension, "i)^(png|jpe?g|bmp|gif|tiff?|webp)$")
+            imageFiles.Push(path)
+    }
+    if (imageFiles.Length = 0) {
+        MsgBox("请先在资源管理器或桌面中选中图片（png、jpg、bmp、gif、tif、webp），再打开面板执行。", title, "Icon!")
+        return
+    }
+    SortPathsByFileNameLogical(imageFiles)
+
+    SplitPath(imageFiles[1], , &outputDir)
+    SplitPath(outputDir, &folderName)
+    defaultName := (folderName != "" ? folderName : "图片合集") . ".pdf"
+    input := InputBox("请输入生成的 PDF 文件名：", title, "w460 h145", defaultName)
+    if (input.Result != "OK")
+        return
+    outputName := Trim(input.Value)
+    if (StrLower(SubStr(outputName, -3)) = ".pdf")
+        outputName := SubStr(outputName, 1, -4)
+    if (outputName = "")
+        outputName := "图片合集"
+    if !ValidateFileNamePart(outputName, title)
+        return
+
+    outputPath := outputDir . "\" . outputName . ".pdf"
+    if FileExist(outputPath) {
+        if (MsgBox("目标文件已存在：`n`n" . outputPath . "`n`n是否覆盖？", title, "YesNo Icon? Default2") != "Yes")
+            return
+    }
+
+    previewLines := []
+    for _, path in imageFiles {
+        SplitPath(path, &fileName)
+        previewLines.Push(fileName)
+    }
+    if !ConfirmWithScrollList(title, "将按文件名顺序把 " . imageFiles.Length . " 张图片合成 PDF，每张一页（列表可上下滚动）："
+        , previewLines, "输出位置：" . outputPath . "`n`n继续？")
+        return
+
+    tool := PdfToolCommand(title)
+    if (tool = "")
+        return
+    commandLine := tool . ' images "' . outputPath . '"'
+    for _, path in imageFiles
+        commandLine .= ' "' . path . '"'
+    ToolTip("正在生成 PDF，请稍候…")
+    try {
+        exitCode := RunWait(commandLine, outputDir, "Hide")
+        ToolTip()
+        if (exitCode != 0) {
+            MsgBox("生成 PDF 失败。请确认图片能正常打开，且目标 PDF 没有被其他程序占用。`n`n退出代码：" . exitCode, title, "Icon!")
+            return
+        }
+        TrayTip("已将 " . imageFiles.Length . " 张图片合成 PDF。", title, 1)
+    } catch as err {
+        ToolTip()
+        MsgBox("生成 PDF 失败：`n`n" . err.Message, title, "Icon!")
     }
 }
 
@@ -3661,6 +3746,221 @@ ConvertSelectedWordFilesToPdf() {
     } else {
         LogPanelDiagnostic("Word转换完成", "successCount=" . successList.Length . "; failedCount=0")
         TrayTip("已将 " . successList.Length . " 个 Word 文档转换为 PDF。", title, 1)
+    }
+}
+
+; PPT 转 PDF：PowerPoint COM 只读打开、无窗口，SaveAs ppSaveAsPDF(32) 到同目录同名 PDF，不保存源文件。
+; PowerPoint 是单实例程序：转换前已在运行就只关闭本次打开的演示文稿，不退出 PowerPoint。
+ConvertSelectedPowerPointFilesToPdf() {
+    title := "PPT 转 PDF"
+    pptFiles := []
+    seenPaths := Map()
+    for _, path in GetSelectedFilePaths() {
+        if DirExist(path)
+            continue
+        SplitPath(path, , , &extension)
+        pathKey := StrLower(path)
+        if (RegExMatch(extension, "i)^(pptx?|pptm|ppsx?)$") && !seenPaths.Has(pathKey)) {
+            seenPaths[pathKey] := true
+            pptFiles.Push(path)
+        }
+    }
+    if (pptFiles.Length = 0) {
+        MsgBox("请先在资源管理器或桌面选中至少一个 PPT 文件（.ppt、.pptx、.pptm、.pps 或 .ppsx）。", title, "Icon!")
+        return
+    }
+    SortPathsByFileNameLogical(pptFiles)
+
+    if (pptFiles.Length > 1) {
+        prompt := "当前选区中检测到 " . pptFiles.Length . " 个 PPT 文件：`n`n"
+            . JoinLines(pptFiles, 8)
+            . "`n`n将逐个转换为同名 PDF，继续吗？"
+        if (MsgBox(prompt, title, "YesNo Icon? Default2") != "Yes")
+            return
+    }
+
+    outputFiles := []
+    existingFiles := []
+    outputKeys := Map()
+    for _, path in pptFiles {
+        SplitPath(path, , &dir, , &nameNoExt)
+        outputPath := dir . "\" . nameNoExt . ".pdf"
+        if outputKeys.Has(StrLower(outputPath)) {
+            MsgBox("多个 PPT 会生成同一个 PDF 文件，无法安全批量转换：`n`n" . outputPath
+                . "`n`n请只选其中一个（例如同名的 .ppt 和 .pptx）。", title, "Icon!")
+            return
+        }
+        outputKeys[StrLower(outputPath)] := true
+        outputFiles.Push(Map("source", path, "output", outputPath))
+        if FileExist(outputPath)
+            existingFiles.Push(outputPath)
+    }
+
+    if (existingFiles.Length > 0) {
+        prompt := "以下同名 PDF 已存在，转换后会覆盖：`n`n"
+            . JoinLines(existingFiles, 8)
+            . "`n`n共 " . existingFiles.Length . " 个。是否继续？"
+        if (MsgBox(prompt, title, "YesNo Icon? Default2") != "Yes")
+            return
+    }
+
+    app := ""
+    wasRunning := ProcessExist("POWERPNT.EXE")
+    successList := []
+    failedList := []
+    ToolTip("正在用 PowerPoint 转换 PDF，请稍候…")
+    try {
+        app := ComObject("PowerPoint.Application")
+        try app.DisplayAlerts := 1        ; ppAlertsNone
+        try app.AutomationSecurity := 3   ; 禁用宏
+
+        for _, item in outputFiles {
+            tempOutput := item["output"] . ".tmp-" . A_NowUTC . "-" . Random(100000, 999999) . ".pdf"
+            pres := ""
+            try {
+                ; Open(文件, ReadOnly=msoTrue, Untitled=msoFalse, WithWindow=msoFalse)
+                pres := app.Presentations.Open(item["source"], -1, 0, 0)
+                pres.SaveAs(tempOutput, 32)   ; ppSaveAsPDF
+                pres.Close()
+                pres := ""
+                if !FileExist(tempOutput)
+                    throw Error("PowerPoint 未生成 PDF 文件。")
+                FileMove(tempOutput, item["output"], 1)
+                successList.Push(item["output"])
+            } catch as err {
+                if IsObject(pres)
+                    try pres.Close()
+                if FileExist(tempOutput)
+                    try FileDelete(tempOutput)
+                failedList.Push(item["source"] . "`n  " . err.Message)
+            }
+        }
+    } catch as err {
+        failedList.Push("无法启动 Microsoft PowerPoint。请确认已安装 PowerPoint。`n  " . err.Message)
+    } finally {
+        ToolTip()
+        if IsObject(app) && !wasRunning {
+            try {
+                if (app.Presentations.Count = 0)
+                    app.Quit()
+            }
+        }
+        app := ""
+    }
+
+    if (failedList.Length > 0) {
+        message := "转换完成：成功 " . successList.Length . " 个，失败 " . failedList.Length . " 个。`n`n"
+            . JoinLines(failedList, 6)
+        if (successList.Length > 0)
+            message .= "`n`n成功生成：`n" . JoinLines(successList, 6)
+        MsgBox(message, title, "Icon!")
+    } else {
+        TrayTip("已将 " . successList.Length . " 个 PPT 转换为 PDF。", title, 1)
+    }
+}
+
+; HTML 转 PDF：交给 tools\html_to_pdf.py（Playwright 驱动本机 Edge，A4、打印背景；没有 Playwright 时退回
+; msedge --print-to-pdf）。输出到源文件同目录同名 PDF，不修改源文件。
+ConvertSelectedHtmlFilesToPdf() {
+    title := "HTML 转 PDF"
+    script := A_ScriptDir . "\..\tools\html_to_pdf.py"
+    if !FileExist(script) {
+        MsgBox("找不到 HTML 转换脚本：`n" . script, title, "Icon!")
+        return
+    }
+    htmlFiles := []
+    seenPaths := Map()
+    for _, path in GetSelectedFilePaths() {
+        if DirExist(path)
+            continue
+        SplitPath(path, , , &extension)
+        pathKey := StrLower(path)
+        if (RegExMatch(extension, "i)^(html?|mhtml?)$") && !seenPaths.Has(pathKey)) {
+            seenPaths[pathKey] := true
+            htmlFiles.Push(path)
+        }
+    }
+    if (htmlFiles.Length = 0) {
+        MsgBox("请先在资源管理器或桌面选中至少一个网页文件（.html、.htm、.mht 或 .mhtml）。", title, "Icon!")
+        return
+    }
+    SortPathsByFileNameLogical(htmlFiles)
+
+    if (htmlFiles.Length > 1) {
+        prompt := "当前选区中检测到 " . htmlFiles.Length . " 个网页文件：`n`n"
+            . JoinLines(htmlFiles, 8)
+            . "`n`n将逐个转换为同名 PDF，继续吗？"
+        if (MsgBox(prompt, title, "YesNo Icon? Default2") != "Yes")
+            return
+    }
+
+    existingFiles := []
+    outputKeys := Map()
+    for _, path in htmlFiles {
+        SplitPath(path, , &dir, , &nameNoExt)
+        outputPath := dir . "\" . nameNoExt . ".pdf"
+        if outputKeys.Has(StrLower(outputPath)) {
+            MsgBox("多个网页会生成同一个 PDF 文件，无法安全批量转换：`n`n" . outputPath
+                . "`n`n请只选其中一个（例如同名的 .html 和 .htm）。", title, "Icon!")
+            return
+        }
+        outputKeys[StrLower(outputPath)] := true
+        if FileExist(outputPath)
+            existingFiles.Push(outputPath)
+    }
+    if (existingFiles.Length > 0) {
+        prompt := "以下同名 PDF 已存在，转换后会覆盖：`n`n"
+            . JoinLines(existingFiles, 8)
+            . "`n`n共 " . existingFiles.Length . " 个。是否继续？"
+        if (MsgBox(prompt, title, "YesNo Icon? Default2") != "Yes")
+            return
+    }
+
+    uniqueSuffix := A_NowUTC . "-" . Random(100000, 999999)
+    reportPath := A_Temp . "\html-to-pdf-" . uniqueSuffix . ".txt"
+    errPath := A_Temp . "\html-to-pdf-" . uniqueSuffix . ".err"
+    commandLine := 'python "' . script . '" --report "' . reportPath . '"'
+    for _, path in htmlFiles
+        commandLine .= ' "' . path . '"'
+    ; 经 cmd 收集 stderr：Python 没能写结果时（找不到 python、启动即报错）也能显示原因
+    commandLine := A_ComSpec . ' /c "' . commandLine . ' 2>"' . errPath . '""'
+
+    ToolTip("正在用 Edge 把网页转换为 PDF，请稍候…")
+    try {
+        exitCode := RunWait(commandLine, , "Hide")
+        ToolTip()
+        report := FileExist(reportPath) ? FileRead(reportPath, "UTF-8") : ""
+        successList := []
+        failedList := []
+        for _, line in StrSplit(report, "`n", "`r") {
+            parts := StrSplit(line, "`t")
+            if (parts.Length < 3)
+                continue
+            if (parts[1] = "OK")
+                successList.Push(parts[3])
+            else
+                failedList.Push(parts[2] . "`n  " . parts[3])
+        }
+        if (successList.Length + failedList.Length = 0) {
+            errText := FileExist(errPath) ? Trim(FileRead(errPath, "CP0"), " `r`n") : ""
+            MsgBox("HTML 转 PDF 失败，没有得到结果。" . (errText != "" ? "`n`n" . SubStr(errText, -1500) : "")
+                . "`n`n退出代码：" . exitCode, title, "Icon!")
+        } else if (failedList.Length > 0) {
+            message := "转换完成：成功 " . successList.Length . " 个，失败 " . failedList.Length . " 个。`n`n"
+                . JoinLines(failedList, 6)
+            if (successList.Length > 0)
+                message .= "`n`n成功生成：`n" . JoinLines(successList, 6)
+            MsgBox(message, title, "Icon!")
+        } else {
+            TrayTip("已将 " . successList.Length . " 个网页转换为 PDF。", title, 1)
+        }
+    } catch as err {
+        ToolTip()
+        MsgBox("HTML 转 PDF 失败：`n`n" . err.Message, title, "Icon!")
+    } finally {
+        for _, tempFile in [reportPath, errPath]
+            if FileExist(tempFile)
+                try FileDelete(tempFile)
     }
 }
 

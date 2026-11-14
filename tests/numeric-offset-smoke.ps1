@@ -6,7 +6,7 @@ $sourceText = [IO.File]::ReadAllText($sourcePath)
 $functionStart = $sourceText.IndexOf('ShowAutomationPanel() {')
 if ($functionStart -lt 0) { throw 'Cannot locate panel functions' }
 $diagnosticStart = $sourceText.IndexOf('LogPanelDiagnostic(eventName, details := "") {')
-$diagnosticEnd = $sourceText.IndexOf('^+e:: {')
+$diagnosticEnd = $sourceText.IndexOf('; 打开面板的快捷键默认')
 if ($diagnosticStart -lt 0 -or $diagnosticEnd -lt 0) { throw 'Cannot locate diagnostic function' }
 $testPath = Join-Path $PSScriptRoot 'numeric-offset-smoke.ahk'
 $tempPath = Join-Path $PSScriptRoot ('numeric-offset-' + [guid]::NewGuid().ToString('N') + '.tmp.ahk')

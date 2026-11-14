@@ -4,12 +4,13 @@
 ; 归组规则见 LatestVersionGroupKey：扩展名相同，文件名去掉“- 副本”“(1)”“v2”“20261104”“最终版”等版本后缀后相同，
 ; 就算同一份文件。CAD 备份 / 锁定文件（.bak .dwl .sv$ 等）、Office 临时文件 ~$ 和隐藏 / 系统文件不参与比较。
 ; 只读：不移动、不改名、不删除任何文件。
+; 依赖 modern-panel-ui.ahk 和 cable-sort.ahk（气泡右键菜单复用 CableSortPopup），使用方须先 #Include 二者。
 
 FindLatestFileVersions() {
     title := "找出最新版本"
     selected := GetSelectedFilePaths()
     if (selected.Length = 0) {
-        MsgBox("请先在资源管理器或桌面选中文件夹（连同子文件夹一起查找），或选中同一文件的几个版本，再按 Ctrl+Shift+E。", title, "Icon!")
+        MsgBox("请先在资源管理器或桌面选中文件夹（连同子文件夹一起查找），或选中同一文件的几个版本，再按 " . AutomationPanelHotkeyText() . "。", title, "Icon!")
         return
     }
     ToolTip("正在查找最新版本，文件多时需要几秒…")
@@ -340,7 +341,7 @@ ShowLatestVersionReport(title, scan) {
     if !hooked {
         for msg, fn in Map(0x0F, LatestUiOnPaint, 0x14, LatestUiOnErase, 0x83, LatestUiOnNcCalcSize
                 , 0x84, LatestUiOnNcHitTest, 0x200, LatestUiOnMouseMove, 0x201, LatestUiOnMouseDown
-                , 0x202, LatestUiOnMouseUp, 0x2A3, LatestUiOnMouseLeave, 0x20A, LatestUiOnWheel
+                , 0x202, LatestUiOnMouseUp, 0x205, LatestUiOnRButtonUp, 0x2A3, LatestUiOnMouseLeave, 0x20A, LatestUiOnWheel
                 , 0x20, LatestUiOnSetCursor, 0x100, LatestUiOnKeyDown)
             OnMessage(msg, fn)
         hooked := true
@@ -440,6 +441,7 @@ LatestUiInvalidate(st) {
 }
 
 LatestUiClose(st) {
+    CableSortPopupClose(st)
     hwnd := st["gui"].Hwnd
     LatestUiStates().Delete(hwnd)
     if st["bmp"]
@@ -983,7 +985,7 @@ LatestUiDrawGraphPane(st, g, x, y, w, h) {
     footY := y + h - 50
     LatestUiRect(g, px, footY, pr - px, 1, "ECEEF1")
     bx := LatestUiDrawFooter(st, g, px, footY + 9, pr - px, 32)
-    LatestUiText(g, "双击任意气泡 = 打开所在文件夹 · 绿色气泡就是最新那份，它所在的文件夹就是答案"
+    LatestUiText(g, "右键任意气泡 = 打开所在文件夹 · 绿色气泡就是最新那份，它所在的文件夹就是答案"
         , px, footY + 9, bx - px - 12, 32, 9, "6B7280")
     gy := y + 56, gh := footY - 6 - gy
     st["graphRect"] := [x, gy, w, gh]
@@ -1069,7 +1071,7 @@ LatestUiDrawGraphPane(st, g, x, y, w, h) {
         LatestUiDrawCard(st, g, cardX, top, cardW, cardH, group, i, cards[i])
         vt := Max(top, clipY), vb := Min(top + cardH, clipY + clipH)
         if (vb > vt)
-            LatestUiHit(st, "card:" . i, cardX, vt, cardW, vb - vt)
+            LatestUiHit(st, "card:" . i, cardX, vt, cardW, vb - vt, false)   ; 左键不打开，不显示手形
     }
     DllCall("gdiplus\GdipResetClip", "Ptr", g)
     ; 中心节点（不随气泡滚动）
@@ -1082,7 +1084,7 @@ LatestUiDrawGraphPane(st, g, x, y, w, h) {
     LatestUiText(g, ext, nodeX + 18, ny + 16, ew, 20, 7.5, "D1D5DB", true, 1)
     LatestUiText(g, newest["name"], nodeX + 18, ny + 42, nodeW - 36, nameLines * 22 + 2, 10.5, "FFFFFF", true, 0, 3, "Microsoft YaHei UI", true)
     LatestUiText(g, "同一个文件 · 共 " . n . " 份副本", nodeX + 18, ny + nodeH - 30, nodeW - 36, 20, 8.5, "A1A6AE")
-    LatestUiHit(st, "node", nodeX, ny, nodeW, nodeH)
+    LatestUiHit(st, "node", nodeX, ny, nodeW, nodeH, false)
     ; 气泡太多时右侧滚动条
     if maxScroll {
         trackY := clipY + 4, trackH := clipH - 8
@@ -1303,16 +1305,13 @@ LatestUiOnMouseDown(wParam, lParam, msg, hwnd) {
         st["scroll"] += (y < st["bar"][1] + (st["bar"][2] - st["bar"][3]) * st["scroll"] / Max(1, st["bar"][4])) ? -page : page
         LatestUiClampScroll(st)
         LatestUiInvalidate(st)
-    } else if (SubStr(id, 1, 4) = "row:" || SubStr(id, 1, 5) = "card:" || id = "node") {
+    } else if (SubStr(id, 1, 4) = "row:") {
+        ; 右栏气泡和中心节点左键不做任何事，打开文件夹改为右键菜单（用户 2026-11-12 要求）
         last := st["lastClick"]
-        if (SubStr(id, 1, 4) = "row:")
-            LatestUiSelect(st, st["rows"][Integer(SubStr(id, 5))])
+        LatestUiSelect(st, st["rows"][Integer(SubStr(id, 5))])
         if (last[2] = id && A_TickCount - last[1] <= DllCall("GetDoubleClickTime")) {
             st["lastClick"] := [0, ""]
-            if (SubStr(id, 1, 5) = "card:")
-                SetTimer(LatestUiReveal.Bind(st, st["groups"][st["sel"]]["copies"][Integer(SubStr(id, 6))]["path"]), -1)
-            else
-                SetTimer(LatestUiLocateSelected.Bind(st), -1)
+            SetTimer(LatestUiLocateSelected.Bind(st), -1)
         } else {
             st["lastClick"] := [A_TickCount, id]
         }
@@ -1342,6 +1341,42 @@ LatestUiOnMouseUp(wParam, lParam, msg, hwnd) {
     ; 延后执行，避免在消息处理中弹出对话框
     SetTimer(LatestUiClick.Bind(st, id, hit), -1)
     return 0
+}
+
+; 右键气泡或中心节点：弹出卡片式菜单（复用电缆排序窗口的 CableSortPopup），由菜单打开所在文件夹
+LatestUiOnRButtonUp(wParam, lParam, msg, hwnd) {
+    states := LatestUiStates()
+    if !states.Has(hwnd)
+        return
+    st := states[hwnd]
+    if !st["sel"]
+        return 0
+    scale := A_ScreenDPI / 96
+    point := LatestUiPoint(lParam)
+    hit := LatestUiHitAt(st, point[1] / scale, point[2] / scale)
+    id := IsObject(hit) ? hit[1] : ""
+    copies := st["groups"][st["sel"]]["copies"]
+    if (SubStr(id, 1, 5) = "card:")
+        copy := copies[Integer(SubStr(id, 6))]
+    else if (id = "node")
+        copy := st["groups"][st["sel"]]["newest"]
+    else
+        return 0
+    SetTimer(LatestUiCopyMenu.Bind(st, copy, id = "node"), -1)
+    return 0
+}
+
+LatestUiCopyMenu(st, copy, isNode) {
+    if !LatestUiStates().Has(st["gui"].Hwnd)
+        return
+    path := copy["path"]
+    SplitPath(path, , &dir)
+    e := [Map("kind", "primary", "icon", Chr(0xE838), "text", isNode ? "打开最新那份所在文件夹" : "打开所在文件夹"
+        , "hint", "选中该文件", "action", () => LatestUiReveal(st, path))]
+    e.Push(Map("kind", "sep"))
+    e.Push(Map("text", "复制文件完整路径", "icon", Chr(0xE8C8), "action", () => (A_Clipboard := path)))
+    e.Push(Map("text", "复制所在文件夹路径", "icon", Chr(0xE8C8), "action", () => (A_Clipboard := dir)))
+    CableSortPopup(st, e, st["gui"].Hwnd)
 }
 
 LatestUiClick(st, id, hit) {

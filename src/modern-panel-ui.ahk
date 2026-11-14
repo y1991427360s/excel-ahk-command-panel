@@ -105,8 +105,10 @@ ModernPanelCreate(title, options := "+AlwaysOnTop -MinimizeBox -MaximizeBox", ke
         for hwnd, oldUi in registry
             if !(oldUi.Has("keep") && oldUi["keep"])
                 stale.Push(hwnd)
+        ; 旧面板窗口一并销毁：不同面板（如自动化面板与另一个面板）同一时间只显示一个
         for hwnd in stale {
             ModernPanelReleaseCanvas(registry[hwnd])
+            try registry[hwnd]["gui"].Destroy()
             registry.Delete(hwnd)
         }
     }
@@ -123,6 +125,9 @@ ModernPanelCreate(title, options := "+AlwaysOnTop -MinimizeBox -MaximizeBox", ke
         OnMessage(0x0200, ModernPanelOnMouseMove)   ; WM_MOUSEMOVE
         OnMessage(0x0201, ModernPanelOnMouseDown)   ; WM_LBUTTONDOWN
         OnMessage(0x0202, ModernPanelOnMouseUp)     ; WM_LBUTTONUP
+        OnMessage(0x0203, ModernPanelOnMouseDown)   ; WM_LBUTTONDBLCLK（窗口类带 CS_DBLCLKS 时第二次按下是这个消息）
+        OnMessage(0x0205, ModernPanelOnRightUp)     ; WM_RBUTTONUP
+        OnMessage(0x020A, ModernPanelOnMouseWheel)  ; WM_MOUSEWHEEL
         OnMessage(0x0020, ModernPanelOnSetCursor)   ; WM_SETCURSOR
         hooked := true
     }
@@ -131,6 +136,13 @@ ModernPanelCreate(title, options := "+AlwaysOnTop -MinimizeBox -MaximizeBox", ke
         , "hover", "", "pressed", "", "canvas", 0, "canvasW", 0, "canvasH", 0, "dirty", true, "keep", keep)
     registry[panel.Hwnd] := ui
     return ui
+}
+
+; 隐藏全部非常驻面板（执行按钮功能前调用）。
+ModernPanelHideAll() {
+    for hwnd, ui in ModernPanelRegistry()
+        if !(ui.Has("keep") && ui["keep"])
+            try ui["gui"].Hide()
 }
 
 ; Win11 圆角窗口。玻璃主题：浅色毛玻璃底，客户区整体并入玻璃；浅色主题：标题栏与窗口同色。
@@ -271,7 +283,10 @@ ModernPanelSame(a, b) {
     return !IsObject(b) && a = b
 }
 
+; 元素设 hidden 为真时不画也不响应（如搜索时被筛掉的卡片）。
 ModernPanelIsVisible(ui, element) {
+    if (element.Has("hidden") && element["hidden"])
+        return false
     return element["page"] = "" || element["page"] = ui["current"]
 }
 
@@ -336,16 +351,28 @@ ModernPanelRender(ui, width, height) {
     DllCall("gdiplus\GdipSetTextRenderingHint", "Ptr", graphics, "Int", isGlass ? 4 : 5)    ; 透明底不能用 ClearType
     DllCall("gdiplus\GdipGraphicsClear", "Ptr", graphics, "UInt", isGlass ? 0x00000000 : ModernPanelArgb(colors["window"]))
 
+    dragged := ModernPanelDragged(ui)
     for element in ui["elements"] {
-        if !ModernPanelIsVisible(ui, element)
+        if (!ModernPanelIsVisible(ui, element) || ModernPanelSame(element, dragged))
             continue
-        style := (ModernPanelSame(element, ui["hover"]) && IsObject(element["hover"])) ? element["hover"] : element["style"]
-        ModernPanelDrawElement(graphics, element["x"] * scale, element["y"] * scale, element["w"] * scale, element["h"] * scale
-            , element["text"], style, scale, isGlass)
-        ; 自绘元素（如电缆总览的平面图）：回调收到 GDI+ 图形对象和缩放比例
-        if element.Has("draw")
-            element["draw"](graphics, scale)
+        ModernPanelRenderElement(ui, graphics, element, scale, isGlass)
     }
+    ; 滚动区右侧的细滚动条
+    if ui.Has("scrolls") {
+        for name, region in ui["scrolls"] {
+            if (region["page"] != ui["current"] || region["max"] <= 0)
+                continue
+            viewH := region["bottom"] - region["top"]
+            barH := Max(28, viewH * viewH / (viewH + region["max"]))
+            barY := region["top"] + (viewH - barH) * region["offset"] / region["max"]
+            bar := ModernPanelRoundPath((region["right"] + 5) * scale, barY * scale, 4 * scale, barH * scale, 2 * scale)
+            ModernPanelFillPath(graphics, bar, 0x40000000 | 0x6B7280)
+            DllCall("gdiplus\GdipDeletePath", "Ptr", bar)
+        }
+    }
+    ; 拖动中的元素最后画，浮在最上层且不受滚动区裁剪
+    if IsObject(dragged)
+        ModernPanelRenderElement(ui, graphics, dragged, scale, isGlass, true)
 
     DllCall("gdiplus\GdipDeleteGraphics", "Ptr", graphics)
     DllCall("gdiplus\GdipDisposeImage", "Ptr", bitmap)
@@ -354,6 +381,109 @@ ModernPanelRender(ui, width, height) {
     ui["canvasW"] := width
     ui["canvasH"] := height
     ui["dirty"] := false
+}
+
+ModernPanelRenderElement(ui, graphics, element, scale, isGlass, isDragged := false) {
+    region := ModernPanelScrollRegion(ui, element)
+    offset := IsObject(region) ? region["offset"] : 0
+    y := element["y"] - offset
+    if (IsObject(region) && !isDragged) {
+        if (y + element["h"] + 12 < region["top"] || y - 12 > region["bottom"])
+            return
+        ; 上下各留 8 像素给投影
+        DllCall("gdiplus\GdipSetClipRectI", "Ptr", graphics, "Int", Round((region["left"] - 10) * scale), "Int", Round((region["top"] - 8) * scale)
+            , "Int", Round((region["right"] - region["left"] + 20) * scale), "Int", Round((region["bottom"] - region["top"] + 16) * scale), "Int", 0)
+    }
+    if (isDragged && element.Has("dragStyle"))
+        style := element["dragStyle"]
+    else
+        style := (ModernPanelSame(element, ui["hover"]) && IsObject(element["hover"])) ? element["hover"] : element["style"]
+    ModernPanelDrawElement(graphics, element["x"] * scale, y * scale, element["w"] * scale, element["h"] * scale
+        , element["text"], style, scale, isGlass)
+    ; 自绘元素（如电缆总览的平面图）：回调收到 GDI+ 图形对象和缩放比例
+    if element.Has("draw")
+        element["draw"](graphics, scale)
+    if (IsObject(region) && !isDragged)
+        DllCall("gdiplus\GdipResetClip", "Ptr", graphics)
+}
+
+; ---------- 滚动区、拖动与动画 ----------
+
+; 登记一个可滚动区域（逻辑像素）。元素设 element["scroll"] := name 即归入该区，y 为内容坐标。
+ModernPanelAddScrollRegion(ui, name, page, left, top, right, bottom, contentBottom) {
+    if !ui.Has("scrolls")
+        ui["scrolls"] := Map()
+    ui["scrolls"][name] := Map("page", page, "left", left, "top", top, "right", right, "bottom", bottom
+        , "offset", 0, "max", Max(0, contentBottom - bottom))
+}
+
+ModernPanelScrollRegion(ui, element) {
+    if (element.Has("scroll") && ui.Has("scrolls") && ui["scrolls"].Has(element["scroll"]))
+        return ui["scrolls"][element["scroll"]]
+    return ""
+}
+
+ModernPanelScrollBy(ui, region, delta) {
+    newOffset := Min(region["max"], Max(0, region["offset"] + delta))
+    if (newOffset = region["offset"])
+        return false
+    region["offset"] := newOffset
+    ModernPanelInvalidate(ui)
+    return true
+}
+
+ModernPanelDragged(ui) {
+    return (ui.Has("drag") && IsObject(ui["drag"])) ? ui["drag"]["element"] : ""
+}
+
+; 鼠标位置（逻辑像素）。
+ModernPanelMousePoint(lParam) {
+    scale := A_ScreenDPI / 96
+    return [((lParam & 0xFFFF) << 48 >> 48) / scale, ((lParam >> 16 & 0xFFFF) << 48 >> 48) / scale]
+}
+
+; 元素设 tx/ty 目标坐标后调用：定时器让它们缓动过去（拖动排序时其他卡片让位）。
+ModernPanelAnimate(ui) {
+    if (ui.Has("animTimer") && IsObject(ui["animTimer"]))
+        return
+    ui["animTimer"] := ModernPanelAnimateStep.Bind(ui)
+    SetTimer(ui["animTimer"], 15)
+}
+
+ModernPanelAnimateStep(ui) {
+    moving := false
+    dragged := ModernPanelDragged(ui)
+    for element in ui["elements"] {
+        if (!element.Has("tx") || ModernPanelSame(element, dragged))
+            continue
+        dx := element["tx"] - element["x"], dy := element["ty"] - element["y"]
+        if (Abs(dx) < 0.6 && Abs(dy) < 0.6) {
+            element["x"] := element["tx"], element["y"] := element["ty"]
+            continue
+        }
+        element["x"] += dx * 0.32, element["y"] += dy * 0.32
+        moving := true
+    }
+    ModernPanelInvalidate(ui)
+    if !moving {
+        SetTimer(ui["animTimer"], 0)
+        ui["animTimer"] := ""
+    }
+}
+
+ModernPanelOnMouseWheel(wParam, lParam, msg, hwnd) {
+    registry := ModernPanelRegistry()
+    if !registry.Has(hwnd)
+        return
+    ui := registry[hwnd]
+    if !ui.Has("scrolls")
+        return
+    delta := (wParam >> 16) << 48 >> 48
+    for name, region in ui["scrolls"]
+        if (region["page"] = ui["current"] && region["max"] > 0) {
+            ModernPanelScrollBy(ui, region, -delta / 120 * 56)
+            return 0
+        }
 }
 
 ModernPanelRoundPath(x, y, w, h, radius) {
@@ -435,6 +565,21 @@ ModernPanelDrawGlassShape(graphics, x, y, width, height, radius, fillArgb, scale
 }
 
 ModernPanelDrawElement(graphics, x, y, width, height, text, style, scale, isGlass) {
+    ; 柔和投影：样式带 shadow（1 常态、2 悬停、3 拖动中），在底色之下画几层逐渐外扩的半透明圆角矩形
+    if (style.Has("shadow") && style["shadow"] > 0 && style["fill"] != "") {
+        level := style["shadow"]
+        base := level = 1 ? 0x14 : level = 2 ? 0x22 : 0x34
+        radius := (style["radius"] != "" ? style["radius"] : 8) * scale
+        offsetY := (level + 0.5) * scale
+        loop 4 {
+            k := 5 - A_Index
+            expand := k * 1.6 * scale
+            alpha := Round(base * (5 - k) / 10)
+            path := ModernPanelRoundPath(x - expand, y - expand + offsetY, width + expand * 2, height + expand * 2, radius + expand)
+            ModernPanelFillPath(graphics, path, (alpha << 24) | 0x1F2937)
+            DllCall("gdiplus\GdipDeletePath", "Ptr", path)
+        }
+    }
     if (style["fill"] != "") {
         fillArgb := ModernPanelArgb(style["fill"])
         if (style["radius"] != "")
@@ -460,7 +605,9 @@ ModernPanelDrawElement(graphics, x, y, width, height, text, style, scale, isGlas
         }
     }
 
-    if (text = "" && style["icon"] = "")
+    hasImage := style.Has("image") && style["image"]
+    hasFolder := style.Has("folder") && style["folder"] != ""
+    if (text = "" && style["icon"] = "" && !hasImage && !hasFolder)
         return
     format := 0, textBrush := 0
     ; 0x1000 NoWrap；样式带 lineLimit 时换行文字只画完整的行（0x2000 LineLimit），放不下的以省略号结尾
@@ -479,7 +626,20 @@ ModernPanelDrawElement(graphics, x, y, width, height, text, style, scale, isGlas
     textHeight := height - ((isGlass && style["fill"] != "") ? 1.5 * scale : 0)
     ; 左侧图标（Segoe MDL2 Assets），文字随之右移，与桌宠菜单的图标列一致
     iconOffset := 0
-    if (style["icon"] != "") {
+    ; 图片图标（GDI+ 位图，如软件自身的图标）或彩色文件夹图标，尺寸 imageSize（逻辑像素）
+    if (hasImage || hasFolder) {
+        imageSize := (style.Has("imageSize") ? style["imageSize"] : 24) * scale
+        imageX := x + padding
+        imageY := y + (height - imageSize) / 2
+        if hasImage {
+            DllCall("gdiplus\GdipSetInterpolationMode", "Ptr", graphics, "Int", 7)   ; HighQualityBicubic
+            DllCall("gdiplus\GdipDrawImageRect", "Ptr", graphics, "Ptr", style["image"]
+                , "Float", imageX, "Float", imageY, "Float", imageSize, "Float", imageSize)
+        } else {
+            ModernPanelDrawFolderIcon(graphics, imageX, imageY, imageSize, ModernPanelArgb(style["folder"]))
+        }
+        iconOffset := imageSize + 10 * scale
+    } else if (style["icon"] != "") {
         iconBrush := 0, iconFormat := 0
         DllCall("gdiplus\GdipCreateStringFormat", "Int", 0x1000, "Int", 0, "Ptr*", &iconFormat)
         DllCall("gdiplus\GdipSetStringFormatAlign", "Ptr", iconFormat, "Int", 1)
@@ -494,11 +654,137 @@ ModernPanelDrawElement(graphics, x, y, width, height, text, style, scale, isGlas
         iconOffset := 28 * scale
     }
     layout := Buffer(16)
-    NumPut("Float", x + padding + iconOffset, "Float", y, "Float", width - padding * 2 - iconOffset, "Float", textHeight, layout)
-    DllCall("gdiplus\GdipDrawString", "Ptr", graphics, "WStr", text, "Int", -1, "Ptr", ModernPanelFont(style["size"], style["bold"])
-        , "Ptr", layout, "Ptr", format, "Ptr", textBrush)
+    textX := x + padding + iconOffset
+    textW := width - padding * 2 - iconOffset
+    subtext := style.Has("subtext") ? style["subtext"] : ""
+    if (subtext != "") {
+        ; 两行：主文字贴下半区上沿，副文字（如快捷键）在下
+        middle := y + textHeight * 0.56
+        DllCall("gdiplus\GdipSetStringFormatLineAlign", "Ptr", format, "Int", 2)
+        NumPut("Float", textX, "Float", y, "Float", textW, "Float", middle - y, layout)
+        DllCall("gdiplus\GdipDrawString", "Ptr", graphics, "WStr", text, "Int", -1, "Ptr", ModernPanelFont(style["size"], style["bold"])
+            , "Ptr", layout, "Ptr", format, "Ptr", textBrush)
+        subBrush := 0
+        DllCall("gdiplus\GdipCreateSolidFill", "UInt", ModernPanelArgb(style.Has("subColor") ? style["subColor"] : style["text"]), "Ptr*", &subBrush)
+        DllCall("gdiplus\GdipSetStringFormatLineAlign", "Ptr", format, "Int", 0)
+        NumPut("Float", textX, "Float", middle + 1 * scale, "Float", textW, "Float", y + textHeight - middle, layout)
+        DllCall("gdiplus\GdipDrawString", "Ptr", graphics, "WStr", subtext, "Int", -1, "Ptr", ModernPanelFont(8.5, false)
+            , "Ptr", layout, "Ptr", format, "Ptr", subBrush)
+        DllCall("gdiplus\GdipDeleteBrush", "Ptr", subBrush)
+    } else {
+        NumPut("Float", textX, "Float", y, "Float", textW, "Float", textHeight, layout)
+        DllCall("gdiplus\GdipDrawString", "Ptr", graphics, "WStr", text, "Int", -1, "Ptr", ModernPanelFont(style["size"], style["bold"])
+            , "Ptr", layout, "Ptr", format, "Ptr", textBrush)
+    }
     DllCall("gdiplus\GdipDeleteBrush", "Ptr", textBrush)
     DllCall("gdiplus\GdipDeleteStringFormat", "Ptr", format)
+}
+
+; 彩色文件夹图标：后片（带标签页）用主色，前片用主色提亮，size 为外接正方形边长（设备像素）。
+ModernPanelDrawFolderIcon(graphics, x, y, size, argb) {
+    alpha := (argb >> 24) & 0xFF
+    r := (argb >> 16) & 0xFF, g := (argb >> 8) & 0xFF, b := argb & 0xFF
+    light :=(alpha << 24) | (Round(r + (255 - r) * 0.28) << 16) | (Round(g + (255 - g) * 0.28) << 8) | Round(b + (255 - b) * 0.28)
+    top := y + size * 0.16
+    height := size * 0.70
+    ; 后片：左上角带一个小标签
+    back := ModernPanelRoundPath(x, top, size, height, size * 0.12)
+    ModernPanelFillPath(graphics, back, argb)
+    DllCall("gdiplus\GdipDeletePath", "Ptr", back)
+    tab := ModernPanelRoundPath(x, top - size * 0.10, size * 0.44, size * 0.22, size * 0.08)
+    ModernPanelFillPath(graphics, tab, argb)
+    DllCall("gdiplus\GdipDeletePath", "Ptr", tab)
+    ; 前片
+    front := ModernPanelRoundPath(x, top + size * 0.17, size, height - size * 0.17, size * 0.12)
+    ModernPanelFillPath(graphics, front, light)
+    DllCall("gdiplus\GdipDeletePath", "Ptr", front)
+}
+
+; 取文件或文件夹的系统图标（48px，带透明通道）转成 GDI+ 位图，按路径缓存；失败返回 0。
+ModernPanelFileIcon(path) {
+    static cache := Map()
+    key := StrLower(path)
+    if cache.Has(key)
+        return cache[key]
+    ModernPanelGdiplusStart()
+    bitmap := 0
+    try {
+        info := Buffer(A_PtrSize + 8 + 520 + 160, 0)
+        if DllCall("shell32\SHGetFileInfoW", "WStr", path, "UInt", 0, "Ptr", info, "UInt", info.Size, "UInt", 0x4000, "UPtr") { ; SHGFI_SYSICONINDEX
+            index := NumGet(info, A_PtrSize, "Int")
+            iid := Buffer(16)
+            DllCall("ole32\CLSIDFromString", "WStr", "{46EB5926-582E-4017-9FDF-E8998DAA0950}", "Ptr", iid)
+            imageList := 0
+            if (DllCall("shell32\SHGetImageList", "Int", 2, "Ptr", iid, "Ptr*", &imageList) = 0 && imageList) { ; SHIL_EXTRALARGE
+                hIcon := DllCall("comctl32\ImageList_GetIcon", "Ptr", imageList, "Int", index, "UInt", 1, "Ptr")
+                ObjRelease(imageList)
+                if hIcon {
+                    bitmap := ModernPanelBitmapFromIcon(hIcon)
+                    DllCall("DestroyIcon", "Ptr", hIcon)
+                }
+            }
+        }
+    }
+    cache[key] := bitmap
+    return bitmap
+}
+
+; HICON → 带透明通道的 GDI+ 位图：用 DrawIconEx 画到全透明的 32 位画布上取像素（直接读图标位图在部分图标上会出噪点）。
+; 没有透明通道的老式图标再画一遍掩码补上不透明度。
+ModernPanelBitmapFromIcon(hIcon, size := 48) {
+    header := Buffer(40, 0)
+    NumPut("UInt", 40, header, 0), NumPut("Int", size, header, 4), NumPut("Int", -size, header, 8)
+    NumPut("UShort", 1, header, 12), NumPut("UShort", 32, header, 14)
+    hdc := DllCall("CreateCompatibleDC", "Ptr", 0, "Ptr")
+    colorBits := 0, maskBits := 0
+    colorDib := DllCall("CreateDIBSection", "Ptr", hdc, "Ptr", header, "UInt", 0, "Ptr*", &colorBits, "Ptr", 0, "UInt", 0, "Ptr")
+    maskDib := DllCall("CreateDIBSection", "Ptr", hdc, "Ptr", header, "UInt", 0, "Ptr*", &maskBits, "Ptr", 0, "UInt", 0, "Ptr")
+    result := 0
+    if (colorDib && maskDib) {
+        old := DllCall("SelectObject", "Ptr", hdc, "Ptr", colorDib, "Ptr")
+        DllCall("DrawIconEx", "Ptr", hdc, "Int", 0, "Int", 0, "Ptr", hIcon, "Int", size, "Int", size, "UInt", 0, "Ptr", 0, "UInt", 3) ; DI_NORMAL
+        count := size * size
+        hasAlpha := false
+        loop count
+            if (NumGet(colorBits, (A_Index - 1) * 4 + 3, "UChar")) {
+                hasAlpha := true
+                break
+            }
+        if !hasAlpha {
+            ; 掩码：先铺白，DI_MASK 后不透明处变黑
+            DllCall("SelectObject", "Ptr", hdc, "Ptr", maskDib)
+            DllCall("RtlFillMemory", "Ptr", maskBits, "UPtr", count * 4, "UChar", 0xFF)
+            DllCall("DrawIconEx", "Ptr", hdc, "Int", 0, "Int", 0, "Ptr", hIcon, "Int", size, "Int", size, "UInt", 0, "Ptr", 0, "UInt", 1) ; DI_MASK
+            loop count {
+                offset := (A_Index - 1) * 4
+                if (NumGet(maskBits, offset, "UInt") & 0xFFFFFF)
+                    NumPut("UInt", 0, colorBits, offset)                    ; 透明处清零（预乘格式）
+                else
+                    NumPut("UChar", 0xFF, colorBits, offset + 3)
+            }
+        }
+        DllCall("SelectObject", "Ptr", hdc, "Ptr", old)
+        ; 让 GDI+ 自己分配像素内存再拷进去：用外部内存创建或克隆的位图会一直引用那块内存，画布释放后就越界
+        DllCall("gdiplus\GdipCreateBitmapFromScan0", "Int", size, "Int", size, "Int", 0, "Int", 0xE200B, "Ptr", 0, "Ptr*", &result) ; PARGB
+        if result {
+            rect := Buffer(16, 0)
+            NumPut("Int", size, rect, 8), NumPut("Int", size, rect, 12)
+            data := Buffer(16 + A_PtrSize * 2, 0)
+            if (DllCall("gdiplus\GdipBitmapLockBits", "Ptr", result, "Ptr", rect, "UInt", 2, "Int", 0xE200B, "Ptr", data) = 0) { ; ImageLockModeWrite
+                stride := NumGet(data, 8, "Int")
+                scan0 := NumGet(data, 16, "Ptr")
+                loop size
+                    DllCall("RtlMoveMemory", "Ptr", scan0 + (A_Index - 1) * stride, "Ptr", colorBits + (A_Index - 1) * size * 4, "UPtr", size * 4)
+                DllCall("gdiplus\GdipBitmapUnlockBits", "Ptr", result, "Ptr", data)
+            }
+        }
+    }
+    if colorDib
+        DllCall("DeleteObject", "Ptr", colorDib)
+    if maskDib
+        DllCall("DeleteObject", "Ptr", maskDib)
+    DllCall("DeleteDC", "Ptr", hdc)
+    return result
 }
 
 ; ---------- 窗口消息 ----------
@@ -550,22 +836,64 @@ ModernPanelOnPaint(wParam, lParam, msg, hwnd) {
 }
 
 ModernPanelHitTest(ui, lParam) {
-    scale := A_ScreenDPI / 96
-    x := ((lParam & 0xFFFF) << 48 >> 48) / scale
-    y := ((lParam >> 16 & 0xFFFF) << 48 >> 48) / scale
+    point := ModernPanelMousePoint(lParam)
+    x := point[1], y := point[2]
+    dragged := ModernPanelDragged(ui)
     for element in ui["elements"] {
-        if (!IsObject(element["onClick"]) || !ModernPanelIsVisible(ui, element))
+        if (!ModernPanelIsInteractive(element) || !ModernPanelIsVisible(ui, element) || ModernPanelSame(element, dragged))
             continue
-        if (x >= element["x"] && x < element["x"] + element["w"] && y >= element["y"] && y < element["y"] + element["h"])
+        top := element["y"]
+        region := ModernPanelScrollRegion(ui, element)
+        if IsObject(region) {
+            if (y < region["top"] || y > region["bottom"])
+                continue
+            top -= region["offset"]
+        }
+        if (x >= element["x"] && x < element["x"] + element["w"] && y >= top && y < top + element["h"])
             return element
     }
     return ""
 }
 
+; 按住左键移动：元素带 dragGroup 时超过 5 像素即开始拖动，元素跟随鼠标；ui["onDragMove"] / ui["onDragEnd"]
+; 回调收到 (ui, 元素, 内容坐标 x, y)，由面板决定其他元素如何让位、松手后如何保存。
 ModernPanelOnMouseMove(wParam, lParam, msg, hwnd) {
     registry := ModernPanelRegistry()
-    if registry.Has(hwnd)
-        ModernPanelSetHover(registry[hwnd], ModernPanelHitTest(registry[hwnd], lParam))
+    if !registry.Has(hwnd)
+        return
+    ui := registry[hwnd]
+    point := ModernPanelMousePoint(lParam)
+    drag := ui.Has("drag") ? ui["drag"] : ""
+    pressed := ui["pressed"]
+    if (!IsObject(drag) && (wParam & 1) && IsObject(pressed) && pressed.Has("dragGroup") && ui.Has("downPoint")) {
+        if (Abs(point[1] - ui["downPoint"][1]) > 5 || Abs(point[2] - ui["downPoint"][2]) > 5) {
+            region := ModernPanelScrollRegion(ui, pressed)
+            offset := IsObject(region) ? region["offset"] : 0
+            drag := Map("element", pressed, "dx", ui["downPoint"][1] - pressed["x"], "dy", ui["downPoint"][2] + offset - pressed["y"])
+            ui["drag"] := drag
+            ui["hover"] := ""
+            DllCall("SetCapture", "Ptr", hwnd)
+        }
+    }
+    if IsObject(drag) {
+        element := drag["element"]
+        region := ModernPanelScrollRegion(ui, element)
+        ; 拖到滚动区上下边缘时自动滚动
+        if IsObject(region) {
+            if (point[2] < region["top"] + 18)
+                ModernPanelScrollBy(ui, region, -10)
+            else if (point[2] > region["bottom"] - 18)
+                ModernPanelScrollBy(ui, region, 10)
+        }
+        offset := IsObject(region) ? region["offset"] : 0
+        element["x"] := point[1] - drag["dx"]
+        element["y"] := point[2] + offset - drag["dy"]
+        if (ui.Has("onDragMove") && IsObject(ui["onDragMove"]))
+            ui["onDragMove"].Call(ui, element, point[1], point[2] + offset)
+        ModernPanelInvalidate(ui)
+        return
+    }
+    ModernPanelSetHover(ui, ModernPanelHitTest(ui, lParam))
 }
 
 ModernPanelSetHover(ui, element) {
@@ -587,21 +915,66 @@ ModernPanelCheckHover() {
 
 ModernPanelOnMouseDown(wParam, lParam, msg, hwnd) {
     registry := ModernPanelRegistry()
-    if registry.Has(hwnd)
-        registry[hwnd]["pressed"] := ModernPanelHitTest(registry[hwnd], lParam)
+    if !registry.Has(hwnd)
+        return
+    registry[hwnd]["pressed"] := ModernPanelHitTest(registry[hwnd], lParam)
+    registry[hwnd]["downPoint"] := ModernPanelMousePoint(lParam)
 }
 
 ModernPanelOnMouseUp(wParam, lParam, msg, hwnd) {
+    static lastElement := "", lastTick := 0
     registry := ModernPanelRegistry()
     if !registry.Has(hwnd)
         return
     ui := registry[hwnd]
+    ; 拖动结束：不算单击
+    if (ui.Has("drag") && IsObject(ui["drag"])) {
+        element := ui["drag"]["element"]
+        ui["drag"] := ""
+        ui["pressed"] := ""
+        DllCall("ReleaseCapture")
+        lastElement := "", lastTick := 0
+        if (ui.Has("onDragEnd") && IsObject(ui["onDragEnd"]))
+            ui["onDragEnd"].Call(ui, element)
+        ModernPanelInvalidate(ui)
+        return
+    }
     element := ModernPanelHitTest(ui, lParam)
     pressed := ui["pressed"]
     ui["pressed"] := ""
+    if !(IsObject(element) && ModernPanelSame(element, pressed))
+        return
+    ; 带双击回调的元素：间隔不超过系统双击时间的第二次单击算双击，第一次单击照常执行 onClick（如选中）。
+    if (element.Has("onDoubleClick") && IsObject(element["onDoubleClick"])) {
+        if (ModernPanelSame(element, lastElement) && A_TickCount - lastTick <= DllCall("GetDoubleClickTime", "UInt")) {
+            lastElement := "", lastTick := 0
+            SetTimer(element["onDoubleClick"], -1)
+            return
+        }
+        lastElement := element, lastTick := A_TickCount
+    }
     ; 延后执行，避免在消息处理中弹出输入框等阻塞窗口消息。
-    if (IsObject(element) && ModernPanelSame(element, pressed))
+    if IsObject(element["onClick"])
         SetTimer(element["onClick"], -1)
+}
+
+ModernPanelOnRightUp(wParam, lParam, msg, hwnd) {
+    registry := ModernPanelRegistry()
+    if !registry.Has(hwnd)
+        return
+    element := ModernPanelHitTest(registry[hwnd], lParam)
+    if (IsObject(element) && element.Has("onRightClick") && IsObject(element["onRightClick"]))
+        SetTimer(element["onRightClick"], -1)
+}
+
+; 可交互元素：有单击、双击或右键回调之一。
+ModernPanelIsInteractive(element) {
+    if IsObject(element["onClick"])
+        return true
+    for key in ["onDoubleClick", "onRightClick"]
+        if (element.Has(key) && IsObject(element[key]))
+            return true
+    return false
 }
 
 ModernPanelOnSetCursor(wParam, lParam, msg, hwnd) {

@@ -4,6 +4,7 @@
 ; 检查归组、默认选中、气泡点击区域、切换选中和滚动，并把窗口截图存成 PNG。不改动临时目录以外的任何文件。
 ; 用法：AutoHotkey64.exe /ErrorStdOut tests\latest-version-window-smoke.ahk <输出PNG>
 #Include ..\src\modern-panel-ui.ahk
+#Include ..\src\cable-sort.ahk  ; 气泡右键菜单复用 CableSortPopup
 #Include ..\src\file-latest-version.ahk
 
 ; 主面板里才有的函数；测试里放空的
@@ -85,6 +86,24 @@ RunWindowSmoke(root, png) {
         if (SubStr(hit[1], 1, 5) = "card:")
             cardHits++
     Check(cardHits = 6, "应有 6 个气泡点击区域，实际 " . cardHits)
+    ; 左键双击气泡不打开文件夹；右键气泡弹出“打开所在文件夹”菜单（菜单放屏幕外，不打扰用户）
+    st["popupAt"] := [-4000, 300]
+    for _, hit in st["hits"]
+        if (hit[1] = "card:2") {
+            scale := A_ScreenDPI / 96
+            lp := (Round((hit[3] + hit[5] / 2) * scale) << 16) | Round((hit[2] + hit[4] / 2) * scale)
+            loop 2 {
+                SendMessage(0x201, 1, lp, , hwnd)
+                SendMessage(0x202, 0, lp, , hwnd)
+            }
+            Sleep(100)
+            Check(!(st.Has("popup") && IsObject(st["popup"])), "左键点气泡不应弹菜单")
+            SendMessage(0x205, 0, lp, , hwnd)
+            Sleep(300)
+            Check(st.Has("popup") && IsObject(st["popup"]), "右键气泡应弹出菜单")
+            CableSortPopupClose(st)
+        }
+    Check(!WinExist("ahk_class CabinetWClass ahk_exe explorer.exe", "电气二次施工图") , "左键双击气泡不应打开资源管理器")
     if (png != "")
         Check(SaveCanvasPng(st, png), "截图失败")
 

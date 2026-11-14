@@ -172,4 +172,10 @@ Write-Host "Installed automation panel:"
 Write-Host "  Script: $sourceScript"
 Write-Host "  Startup: $startupLink"
 Write-Host "  PID: $(($runningPanel.ProcessId) -join ', ')"
-Write-Host "  Hotkey: Ctrl+Shift+E"
+$panelHotkey = 'Ctrl+Shift+E'
+$hotkeyConfig = Join-Path $env:LOCALAPPDATA 'AutoHotkeyPanel\hotkeys.ini'
+if (Test-Path -LiteralPath $hotkeyConfig) {
+    $configured = Get-Content -LiteralPath $hotkeyConfig | Where-Object { $_ -match '^\s*panel\.open\s*=\s*(\S+)' } | Select-Object -First 1
+    if ($configured -match '=\s*(\S+)') { $panelHotkey = "$($Matches[1]) (custom, AHK notation)" }
+}
+Write-Host "  Hotkey: $panelHotkey"

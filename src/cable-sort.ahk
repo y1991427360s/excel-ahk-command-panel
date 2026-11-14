@@ -1,5 +1,5 @@
 #Requires AutoHotkey v2.0
-; 电缆排序窗口（配合中望 YSDL3）：YSDL3 把清册各行写进 %TEMP%\AA-YSDL3\job.txt，这里每 0.3 秒检查一次，
+; 电缆排序窗口（配合中望 / AutoCAD 2018 的 YSDL3）：YSDL3 把清册各行写进 %TEMP%\AA-YSDL3\job.txt，这里每 0.3 秒检查一次，
 ; 出现新任务就弹出窗口。左：“前缀（+编号范围）→ 起点柜”规则（读本工程规则文件，没有规则的前缀自动推断）；
 ; 中：未分类的电缆（搜索、勾选多选）；右：分类气泡（初始为图上的分类框），放进气泡的电缆只在气泡里显示。
 ; 勾选或多选后把电缆拖进气泡，气泡内上下拖动排序，右键气泡可改名、删除、前后移、按编号排序。
@@ -54,7 +54,7 @@ CableSortPoll() {
         return
     if (modified = CableSortLastTime)
         return
-    try text := FileRead(CableSortJobPath, "UTF-8")
+    try text := CableSortReadTextAuto(CableSortJobPath)   ; 中望写 UTF-8，AutoCAD 2018 写 GBK
     catch
         return          ; CAD 正在改名替换文件，下一轮再读
     CableSortLastTime := modified
@@ -1867,9 +1867,12 @@ CableSortApply(st) {
         if (MsgBox(msg . "继续导出？", title, "YesNo Icon!" . owner) != "Yes")
             return
     }
-    try cadApp := ComObjActive("ZWCAD.Application")
+    ; 任务来自哪个 CAD 就发回哪个：AutoCAD 2018 的插件按系统 ANSI（GBK）读 result.txt
+    isAcad := job.Has("cad") && job["cad"] = "ACAD"
+    cadName := isAcad ? "AutoCAD" : "中望 CAD"
+    try cadApp := ComObjActive(isAcad ? "AutoCAD.Application" : "ZWCAD.Application")
     catch {
-        MsgBox("没有找到运行中的中望 CAD。", title, "Icon!" . owner)
+        MsgBox("没有找到运行中的" . cadName . "。", title, "Icon!" . owner)
         return
     }
     try {
@@ -1884,11 +1887,11 @@ CableSortApply(st) {
             return
         }
         if (doc.GetVariable("CMDACTIVE") != 0) {
-            MsgBox("中望 CAD 正在执行命令，请先按 Esc 结束命令再导出。", title, "Icon!" . owner)
+            MsgBox(cadName . " 正在执行命令，请先按 Esc 结束命令再导出。", title, "Icon!" . owner)
             return
         }
         tmp := CableSortResultPath . ".tmp"
-        f := FileOpen(tmp, "w", "UTF-8-RAW")
+        f := FileOpen(tmp, "w", isAcad ? "CP936" : "UTF-8-RAW")
         f.Write(text)
         f.Close()
         FileMove(tmp, CableSortResultPath, 1)
@@ -1913,12 +1916,12 @@ CableSortApply(st) {
         if (cadApp.ActiveDocument.FullName != doc.FullName)
             doc.Activate()
         doc.SendCommand('(aa:ysdl3-apply "' . job["id"] . '")`n')
-        try WinActivate("ahk_exe ZWCAD.exe")
+        try WinActivate(isAcad ? "ahk_exe acad.exe" : "ahk_exe ZWCAD.exe")
     } catch as e {
-        MsgBox("发送到中望 CAD 失败：`n" . e.Message . "`n`n如果插件没加载，请先重载 AA整合版本.lsp。", title, "Iconx" . owner)
+        MsgBox("发送到" . cadName . "失败：`n" . e.Message . "`n`n如果插件没加载，请先在 CAD 里加载（或重载）AA 整合插件。", title, "Iconx" . owner)
         return
     }
-    st["ctl"]["status"].Value := FormatTime(, "HH:mm:ss") . " 已发送到中望 CAD，结果以 CAD 的提示为准；" . saved
+    st["ctl"]["status"].Value := FormatTime(, "HH:mm:ss") . " 已发送到" . cadName . "，结果以 CAD 的提示为准；" . saved
         . "。成功后这次任务已用掉，要再导出请重新运行 YSDL3。"
 }
 
