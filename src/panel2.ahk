@@ -3,7 +3,8 @@
 ; 页面：常用软件、常用文件夹（双击打开，右键管理，可从资源管理器拖进来）、文件处理（视频、HTML）、默认输入法、快捷键。
 ; 快捷键自成一个作用域（见 custom-hotkeys.ahk 的 CustomHotkeyAddScope）：打开 2号面板的快捷键（id panel2.open）、
 ; 文件处理功能和每个常用软件 / 文件夹都可绑定，只在本面板“快捷键”页设置，配置在 %LOCALAPPDATA%\AutoHotkeyPanel\panel2-hotkeys.ini。
-; 快捷方式清单保存在 %LOCALAPPDATA%\AutoHotkeyPanel\panel2-shortcuts.tsv（UTF-8 带 BOM，每行：类型<Tab>名称<Tab>路径）。
+; 快捷方式清单保存在 %LOCALAPPDATA%\AutoHotkeyPanel\panel2-shortcuts.tsv（UTF-8 带 BOM，每行：类型<Tab>名称<Tab>路径[<Tab>颜色]；
+; 集合行路径为 group:<编号>，第 5 列是成员路径，以 | 分隔）。
 
 global AutomationPanel2Gui := ""
 global AutomationPanel2Ui := ""
@@ -42,10 +43,21 @@ AutomationPanel2IsActive() {
     return false
 }
 
-OpenAutomationPanel2FromHotkey(*) {
+; 快捷键按一下打开、再按一下关闭（面板显示着就隐藏）；托盘入口传 forceOpen 只打开。
+OpenAutomationPanel2FromHotkey(forceOpen := false, *) {
+    global AutomationPanel2Gui
     static isOpening := false
     if isOpening
         return
+    if (forceOpen != true && IsObject(AutomationPanel2Gui)) {
+        visible := false
+        try visible := DllCall("IsWindowVisible", "Ptr", AutomationPanel2Gui.Hwnd)
+        if visible {
+            Panel2PopupClose()
+            try AutomationPanel2Gui.Hide()
+            return
+        }
+    }
     isOpening := true
     try {
         ShowAutomationPanel2()
@@ -149,8 +161,14 @@ Panel2Build(page, rebuild := false) {
                 items.Push(item)
         ; 标题与搜索框同一行：左边标题，右边圆角搜索框（输入框是子控件，压在这块底色上）
         pageKey := isApp ? "apps" : "folders"
-        ModernPanelLabelAt(ui, contentX + 6, contentY, 190, 34, (isApp ? "常用软件" : "常用文件夹") . "（" . items.Length . "）"
+        ModernPanelLabelAt(ui, contentX + 6, contentY, 116, 34, (isApp ? "常用软件" : "常用文件夹") . "（" . items.Length . "）"
             , ModernPanelTextStyle(colors["secondary"], 9, true))
+        ; 新建集合：标题和搜索框之间的小按钮
+        groupStyle := ModernPanelStyle("FFFFFF", colors["text"])
+        groupStyle["border"] := colors["tileBorder"], groupStyle["radius"] := 14, groupStyle["size"] := 9
+        groupHover := ModernPanelStyle("F5F7FA", "1D4ED8")
+        groupHover["border"] := colors["tileBorder"], groupHover["radius"] := 14, groupHover["size"] := 9
+        ModernPanelAddElement(ui, 332, contentY + 3, 80, 28, "新建集合", groupStyle, groupHover, Panel2NewGroup.Bind(kind, ""))
         searchStyle := ModernPanelDecorate(ModernPanelStyle(Panel2SearchFill(), colors["text"], false, "left"), "", Chr(0xE721), colors["icon"])
         searchStyle["radius"] := 17
         searchStyle["padding"] := 12
@@ -358,6 +376,16 @@ Panel2SearchMatch(item, terms) {
     name := StrLower(item["name"])
     initials := Panel2PinyinInitials(item["name"])
     path := StrLower(item["path"])
+    if Panel2IsGroup(item) {
+        ; 集合：集合名或任一成员的名称、拼音首字母、路径都算
+        path := ""
+        for memberPath in item["members"] {
+            memberName := Panel2DefaultName(memberPath)
+            name .= "`n" . StrLower(memberName)
+            initials .= "`n" . Panel2PinyinInitials(memberName)
+            path .= "`n" . StrLower(memberPath)
+        }
+    }
     for term in terms {
         if InStr(name, term) || InStr(initials, term) || (StrLen(term) >= 2 && InStr(path, term))
             continue
@@ -440,6 +468,10 @@ Panel2SearchEnter() {
         for tile in tiles
             if ModernPanelSame(tile, ui["selectedTile"])
                 target := tile
+    if Panel2IsGroup(target["item"]) {
+        Panel2GroupPopup(target["item"])   ; 集合：展开成员方框
+        return
+    }
     Panel2OpenShortcut(target["item"])
 }
 
@@ -518,7 +550,7 @@ Panel2ShortcutGrid(ui, page, items, colors) {
         element["exists"] := exists
         element["item"] := item
         element["onClick"] := Panel2SelectShortcut.Bind(ui, element, item)
-        element["onDoubleClick"] := Panel2OpenShortcut.Bind(item)
+        element["onDoubleClick"] := Panel2IsGroup(item) ? Panel2GroupPopup.Bind(item) : Panel2OpenShortcut.Bind(item)
         element["onRightClick"] := Panel2ShortcutMenu.Bind(item)
         grid["tiles"].Push(element)
         ui["shortcutTiles"].Push(element)
@@ -582,6 +614,21 @@ Panel2CardStyle(item, exists, keyText, state) {
     style["shadow"] := state = "drag" ? 3 : state = "hover" ? 2 : 1
     style["border"] := state = "selected" ? strong : ""
     style["imageSize"] := 28
+    if Panel2IsGroup(item) {
+        ; 集合：半透明白色底板上 2×2 排前 4 个成员的图标
+        grid := []
+        for path in item["members"] {
+            if (grid.Length >= 4)
+                break
+            grid.Push(DirExist(path) ? strong : FileExist(path) ? ModernPanelFileIcon(path) : 0)
+        }
+        style["imageGrid"] := grid
+        style["imageGridFill"] := state = "normal" || state = "selected" ? "C8FFFFFF" : "E6FFFFFF"
+        style["imageSize"] := 32
+        style["subtext"] := keyText != "" ? keyText : "集合 · " . (item["members"].Length ? item["members"].Length . " 项" : "空")
+        style["subColor"] := colors["secondary"]
+        return style
+    }
     if (item["type"] = "folder")
         style["folder"] := strong
     else {
@@ -707,7 +754,7 @@ Panel2HotkeysInit() {
     static trayDone := false
     if !trayDone {
         ; 放在自动化面板的托盘项（打开、恢复快捷键、分隔线）之后
-        A_TrayMenu.Insert("4&", "打开 2号自动化面板", (*) => OpenAutomationPanel2FromHotkey())
+        A_TrayMenu.Insert("4&", "打开 2号自动化面板", (*) => OpenAutomationPanel2FromHotkey(true))
         A_TrayMenu.Insert("5&")
         trayDone := true
     }
@@ -721,9 +768,20 @@ Panel2HotkeyCommands() {
         Map("id", "panel2.compressVideo", "page", "文件处理", "name", "压缩视频", "callback", CompressSelectedVideos),
         Map("id", "panel2.htmlPdf", "page", "文件处理", "name", "HTML 转 PDF", "callback", ConvertSelectedHtmlFilesToPdf)
     ]
-    for item in Panel2LoadShortcuts()
-        commands.Push(Map("id", Panel2ShortcutHotkeyId(item), "page", item["type"] = "folder" ? "常用文件夹" : "常用软件"
-            , "name", "打开 " . item["name"], "callback", Panel2OpenShortcut.Bind(item), "noContext", true))
+    for item in Panel2LoadShortcuts() {
+        page := item["type"] = "folder" ? "常用文件夹" : "常用软件"
+        if !Panel2IsGroup(item) {
+            commands.Push(Map("id", Panel2ShortcutHotkeyId(item), "page", page
+                , "name", "打开 " . item["name"], "callback", Panel2OpenShortcut.Bind(item), "noContext", true))
+            continue
+        }
+        ; 集合本身不绑快捷键；成员各自的快捷键（移入集合前设的）继续有效
+        for path in item["members"] {
+            member := Panel2MemberItem(path)
+            commands.Push(Map("id", Panel2ShortcutHotkeyId(member), "page", page
+                , "name", "打开 " . member["name"] . "（" . item["name"] . "）", "callback", Panel2OpenShortcut.Bind(member), "noContext", true))
+        }
+    }
     return commands
 }
 
@@ -762,6 +820,15 @@ Panel2LoadShortcuts() {
         item := Map("type", fields[1], "name", fields[2], "path", fields[3])
         if (fields.Length >= 4 && IsInteger(fields[4]))
             item["color"] := Integer(fields[4])
+        ; 集合：路径为 group:<编号>，第 5 列是成员路径，用 | 分隔（Windows 路径里不会出现 |）
+        if (SubStr(fields[3], 1, 6) = "group:") {
+            members := []
+            if (fields.Length >= 5)
+                for memberPath in StrSplit(fields[5], "|")
+                    if (Trim(memberPath) != "")
+                        members.Push(memberPath)
+            item["members"] := members
+        }
         items.Push(item)
     }
     return items
@@ -772,9 +839,19 @@ Panel2SaveShortcuts(items) {
     SplitPath(path, , &directory)
     DirCreate(directory)
     text := ""
-    for item in items
+    for item in items {
+        color := item.Has("color") && item["color"] ? item["color"] : ""
         text .= item["type"] . "`t" . StrReplace(item["name"], "`t", " ") . "`t" . item["path"]
-            . (item.Has("color") && item["color"] ? "`t" . item["color"] : "") . "`r`n"
+        if Panel2IsGroup(item) {
+            members := ""
+            for memberPath in item["members"]
+                members .= (members = "" ? "" : "|") . memberPath
+            text .= "`t" . color . "`t" . members
+        } else if (color != "") {
+            text .= "`t" . color
+        }
+        text .= "`r`n"
+    }
     tempPath := path . ".tmp"
     file := FileOpen(tempPath, "w", "UTF-8")   ; 新建文件时写入 BOM
     file.Write(text)
@@ -790,7 +867,39 @@ Panel2IndexOf(items, item) {
 }
 
 Panel2ShortcutExists(item) {
+    if Panel2IsGroup(item)
+        return true   ; 集合本身总是可用，成员找不到时在展开列表里单独变灰
     return item["type"] = "folder" ? DirExist(item["path"]) != "" : FileExist(item["path"]) != ""
+}
+
+Panel2IsGroup(item) {
+    return item.Has("members")
+}
+
+; 集合成员当作普通条目用：类型按路径实际是文件夹还是文件决定，名称取默认名。
+Panel2MemberItem(path) {
+    return Map("type", DirExist(path) ? "folder" : "app", "name", Panel2DefaultName(path), "path", path)
+}
+
+Panel2NormalizePath(path) {
+    path := RTrim(path, "\")
+    if RegExMatch(path, "^[A-Za-z]:$")
+        path .= "\"
+    return path
+}
+
+; 路径是否已在清单里（列表本身或任一集合中），返回所在条目的序号，没有返回 0。
+Panel2FindPath(items, path) {
+    for index, current in items {
+        if Panel2IsGroup(current) {
+            for memberPath in current["members"]
+                if (memberPath = path)
+                    return index
+        } else if (current["path"] = path) {
+            return index
+        }
+    }
+    return 0
 }
 
 Panel2DefaultName(path) {
@@ -816,13 +925,11 @@ Panel2AddPaths(paths, *) {
     items := Panel2LoadShortcuts()
     added := 0, skipped := 0, lastType := ""
     for filePath in paths {
-        filePath := RTrim(filePath, "\")
-        if RegExMatch(filePath, "^[A-Za-z]:$")
-            filePath .= "\"
+        filePath := Panel2NormalizePath(filePath)
         kind := DirExist(filePath) ? "folder" : "app"
         item := Map("type", kind, "name", Panel2DefaultName(filePath), "path", filePath)
         lastType := kind
-        if Panel2IndexOf(items, item) {
+        if (Panel2IndexOf(items, item) || Panel2FindPath(items, filePath)) {
             skipped += 1
             continue
         }
@@ -876,29 +983,40 @@ Panel2SelectShortcut(ui, element, item, *) {
     ui["selectedTile"] := element
     hotkeyId := Panel2ShortcutHotkeyId(item)
     keyText := CustomHotkeyBindings.Has(hotkeyId) ? CustomHotkeyDisplay(CustomHotkeyBindings[hotkeyId]) . " · " : ""
+    if Panel2IsGroup(item) {
+        names := ""
+        for path in item["members"]
+            names .= (names = "" ? "" : "、") . Panel2DefaultName(path)
+        Panel2SetInfo(item["name"], keyText . (names = "" ? "空集合：右键其他卡片选“移入集合”，或双击后添加。" : "双击展开：" . names))
+        return
+    }
     Panel2SetInfo(item["name"], keyText . (element["exists"] ? "" : "找不到：") . item["path"])
 }
 
 Panel2OpenShortcut(item, *) {
     global AutomationPanel2Gui
+    if Panel2IsGroup(item)
+        return Panel2GroupPopup(item)
     if !Panel2ShortcutExists(item) {
         try AutomationPanel2Gui.Opt("+OwnDialogs")
         MsgBox("找不到“" . item["name"] . "”：`n" . item["path"] . "`n`n可右键选择“删除”，或重新添加。", "2号自动化面板", "Icon!")
         return
     }
     try AutomationPanel2Gui.Hide()
-    try {
-        if (item["type"] = "folder") {
-            Run('explorer.exe "' . item["path"] . '"')
-        } else {
-            SplitPath(item["path"], , &directory, &extension)
-            if (extension = "exe")
-                Run('"' . item["path"] . '"', directory)
-            else
-                Run('"' . item["path"] . '"')
-        }
-    } catch as err {
+    try Panel2Launch(item)
+    catch as err
         MsgBox("打开失败：" . err.Message, "2号自动化面板", "Icon!")
+}
+
+Panel2Launch(item) {
+    if (item["type"] = "folder") {
+        Run('explorer.exe "' . item["path"] . '"')
+    } else {
+        SplitPath(item["path"], , &directory, &extension)
+        if (extension = "exe")
+            Run('"' . item["path"] . '"', directory)
+        else
+            Run('"' . item["path"] . '"')
     }
 }
 
@@ -910,7 +1028,7 @@ global Panel2PopupTimer := ""
 global Panel2PopupMouseDown := false
 
 Panel2ShortcutMenu(item, *) {
-    global AutomationPanel2Ui, AutomationPanel2Gui, Panel2Popup, Panel2PopupTimer, Panel2PopupMouseDown
+    global AutomationPanel2Ui
     Panel2PopupClose()
     ui := AutomationPanel2Ui
     ; 右键的条目同时选中，让人看清操作的是哪一张卡片
@@ -923,9 +1041,7 @@ Panel2ShortcutMenu(item, *) {
     colors := ModernPanelColors()
     exists := Panel2ShortcutExists(item)
     color := Panel2ItemColor(item)
-    pop := ModernPanelCreate("2号面板菜单", "-Caption +ToolWindow +AlwaysOnTop +E0x08000000 +Owner" . AutomationPanel2Gui.Hwnd, true)
-    g := pop["gui"]
-    try DllCall("dwmapi\DwmSetWindowAttribute", "Ptr", g.Hwnd, "UInt", 34, "UInt*", ModernPanelColorRef(colors["tileBorder"]), "UInt", 4)
+    pop := Panel2PopupNew()
     w := 262, pad := 8, y := pad
 
     ; 信息块
@@ -934,16 +1050,28 @@ Panel2ShortcutMenu(item, *) {
     info["radius"] := 10
     info["padding"] := 12
     info["imageSize"] := 26
-    info["subtext"] := item["path"]
+    isGroup := Panel2IsGroup(item)
+    if isGroup
+        info["imageSize"] := 30
+    info["subtext"] := isGroup ? "集合 · " . item["members"].Length . " 项" : item["path"]
     ModernPanelAddElement(pop, pad, y, w - pad * 2, 52, item["name"], info)
     y += 52 + 6
 
-    entries := [
-        Map("text", "打开", "icon", Chr(0xE8A7), "action", () => Panel2OpenShortcut(item), "enabled", exists, "bold", true),
-        Map("text", "打开所在位置", "icon", Chr(0xE838), "action", () => Panel2RevealShortcut(item), "enabled", exists),
-        Map("sep", true),
-        Map("text", "重命名…", "icon", Chr(0xE8AC), "action", () => Panel2RenameShortcut(item))
-    ]
+    if isGroup {
+        entries := [
+            Map("text", "展开", "icon", Chr(0xE8A7), "action", () => Panel2GroupPopup(item), "bold", true),
+            Map("sep", true),
+            Map("text", "重命名…", "icon", Chr(0xE8AC), "action", () => Panel2RenameShortcut(item))
+        ]
+    } else {
+        entries := [
+            Map("text", "打开", "icon", Chr(0xE8A7), "action", () => Panel2OpenShortcut(item), "enabled", exists, "bold", true),
+            Map("text", "打开所在位置", "icon", Chr(0xE838), "action", () => Panel2RevealShortcut(item), "enabled", exists),
+            Map("sep", true),
+            Map("text", "重命名…", "icon", Chr(0xE8AC), "action", () => Panel2RenameShortcut(item)),
+            Map("text", "移入集合…", "icon", Chr(0xE8F1), "action", () => Panel2MoveToGroupMenu(item))
+        ]
+    }
     for en in entries {
         if en.Has("sep") {
             Panel2PopupSeparator(pop, w, &y)
@@ -990,24 +1118,281 @@ Panel2ShortcutMenu(item, *) {
     }
     y += 36
     Panel2PopupSeparator(pop, w, &y)
-    Panel2PopupItem(pop, pad, y, w - pad * 2, Map("text", "从列表删除", "icon", Chr(0xE74D), "action", () => Panel2DeleteShortcut(item), "danger", true))
+    Panel2PopupItem(pop, pad, y, w - pad * 2, Map("text", isGroup ? "解散集合（成员放回列表）" : "从列表删除"
+        , "icon", Chr(isGroup ? 0xE8F0 : 0xE74D), "action", () => Panel2DeleteShortcut(item), "danger", true))
     y += 34
-    height := y + pad
+    Panel2PopupShow(pop, w, y + pad)
+}
 
-    ; 位置：鼠标右下方，放不下就往上 / 往左挪
+; 新建一个自绘弹窗（不抢焦点，归 2号面板所有）。
+Panel2PopupNew() {
+    global AutomationPanel2Gui
+    colors := ModernPanelColors()
+    pop := ModernPanelCreate("2号面板菜单", "-Caption +ToolWindow +AlwaysOnTop +E0x08000000 +Owner" . AutomationPanel2Gui.Hwnd, true)
+    try DllCall("dwmapi\DwmSetWindowAttribute", "Ptr", pop["gui"].Hwnd, "UInt", 34, "UInt*", ModernPanelColorRef(colors["tileBorder"]), "UInt", 4)
+    return pop
+}
+
+; 显示弹窗：默认在鼠标右下方，也可指定屏幕坐标；放不下就往上 / 往左挪。
+Panel2PopupShow(pop, w, height, screenX := "", screenY := "") {
+    global AutomationPanel2Gui, Panel2Popup, Panel2PopupTimer, Panel2PopupMouseDown, Panel2PopupLastPos
     scale := A_ScreenDPI / 96
-    CoordMode("Mouse", "Screen")
-    MouseGetPos(&mx, &my)
+    if (screenX = "") {
+        CoordMode("Mouse", "Screen")
+        MouseGetPos(&mx, &my)
+        screenX := mx + 2, screenY := my + 2
+    }
     area := Panel2WorkArea(AutomationPanel2Gui.Hwnd)
-    x := Min(mx + 2, area[3] - Round(w * scale) - 4)
-    yy := my + 2
-    if (yy + height * scale > area[4])
-        yy := Max(area[2], my - Round(height * scale) - 2)
+    x := Max(area[1], Min(screenX, area[3] - Round(w * scale) - 4))
+    y := screenY
+    if (y + height * scale > area[4])
+        y := Max(area[2], area[4] - Round(height * scale) - 4)
+    Panel2PopupLastPos := [x, y]
     Panel2Popup := pop
-    g.Show("NA x" . x . " y" . yy . " w" . w . " h" . height)
+    pop["gui"].Show("NA x" . x . " y" . y . " w" . w . " h" . height)
     Panel2PopupMouseDown := Panel2AnyMouseDown()
     Panel2PopupTimer := Panel2PopupWatch
     SetTimer(Panel2PopupTimer, 60)
+}
+
+; ---------- 集合 ----------
+; 一张卡片里放多个软件或文件夹。双击（或搜索时回车）在面板中间展开一个方框，里面是成员的柔彩卡片：
+; 单击打开，右键可打开所在位置或移出集合（放回列表）；标题行右边“添加”直接选择添加。
+; 成员也可以从其他卡片的右键菜单“移入集合…”进来。
+global Panel2PopupLastPos := ""
+
+Panel2FindGroup(group) {
+    items := Panel2LoadShortcuts()
+    index := Panel2IndexOf(items, group)
+    return index && Panel2IsGroup(items[index]) ? items[index] : ""
+}
+
+Panel2GroupPopup(group, *) {
+    global AutomationPanel2Ui, AutomationPanel2Gui, CustomHotkeyBindings
+    Panel2PopupClose()
+    group := Panel2FindGroup(group)
+    if !IsObject(group)
+        return
+    ui := AutomationPanel2Ui
+    for tile in ui["shortcutTiles"]
+        if (tile["item"]["path"] = group["path"]) {
+            Panel2SelectShortcut(ui, tile, tile["item"])
+            break
+        }
+    colors := ModernPanelColors()
+    isApp := group["type"] = "app"
+    count := group["members"].Length
+    pop := Panel2PopupNew()
+    w := 452, pad := 16
+
+    ; 标题行：左边集合名和项数，右边“添加”圆角按钮
+    ModernPanelLabelAt(pop, pad + 2, 14, w - pad * 2 - 110, 28, group["name"], ModernPanelTextStyle(colors["text"], 12, true))
+    ModernPanelLabelAt(pop, pad + 2, 42, w - pad * 2 - 110, 18, count ? count . " 项 · 单击打开，右键管理" : "空集合"
+        , ModernPanelTextStyle(colors["secondary"], 9))
+    addX := w - pad - 90
+    addStyle := ModernPanelDecorate(ModernPanelStyle("FFFFFF", colors["text"]), colors["tileBorder"], Chr(0xE710), colors["icon"])
+    addHover := ModernPanelDecorate(ModernPanelStyle("F5F7FA", colors["text"]), colors["tileBorder"], Chr(0xE710), colors["iconHover"])
+    addStyle["radius"] := addHover["radius"] := 16
+    addStyle["padding"] := addHover["padding"] := 12
+    ModernPanelAddElement(pop, addX, 20, 90, 32, "添加", addStyle, addHover, Panel2PopupAction(Panel2AddToGroupByDialog.Bind(group)))
+
+    top := 72
+    if !count {
+        empty := ModernPanelStyle("F7F8FA", colors["secondary"])
+        empty["radius"] := 14, empty["size"] := 9.5
+        ModernPanelLabelAt(pop, pad, top, w - pad * 2, 88
+            , isApp ? "还是空的：右键其他软件选“移入集合…”，或点右上角“添加”" : "还是空的：右键其他文件夹选“移入集合…”，或点右上角“添加”", empty)
+        Panel2PopupShow(pop, w, top + 88 + pad, Panel2GroupPopupX(w), Panel2GroupPopupY(top + 88 + pad))
+        return
+    }
+
+    ; 成员卡片：与主面板同样的柔彩卡片，两列；超过 5 行时滚轮滚动
+    columns := 2, gap := 12, tileH := 56
+    tileW := (w - pad * 2 - gap) // columns
+    rows := (count + columns - 1) // columns
+    shownRows := Min(rows, 5)
+    bottom := top + shownRows * (tileH + gap) - gap
+    for index, path in group["members"] {
+        member := Panel2MemberItem(path)
+        exists := Panel2ShortcutExists(member)
+        hotkeyId := Panel2ShortcutHotkeyId(member)
+        keyText := CustomHotkeyBindings.Has(hotkeyId) ? CustomHotkeyDisplay(CustomHotkeyBindings[hotkeyId]) : ""
+        x := pad + Mod(index - 1, columns) * (tileW + gap)
+        y := top + ((index - 1) // columns) * (tileH + gap)
+        card := ModernPanelAddElement(pop, x, y, tileW, tileH, member["name"]
+            , Panel2CardStyle(member, exists, keyText, "normal"), Panel2CardStyle(member, exists, keyText, "hover")
+            , Panel2PopupAction(Panel2OpenShortcut.Bind(member)))
+        card["onRightClick"] := Panel2MemberMenu.Bind(group, path)
+        if (rows > shownRows)
+            card["scroll"] := "members"
+    }
+    if (rows > shownRows)
+        ModernPanelAddScrollRegion(pop, "members", pop["page"], pad, top - 4, w - pad, bottom + 4, top + rows * (tileH + gap) - gap + 4)
+    height := bottom + pad + 4
+    Panel2PopupShow(pop, w, height, Panel2GroupPopupX(w), Panel2GroupPopupY(height))
+}
+
+; 集合方框放在 2号面板内容区正中（屏幕坐标）。
+Panel2GroupPopupX(w) {
+    global AutomationPanel2Gui
+    WinGetClientPos(&clientX, , , , "ahk_id " . AutomationPanel2Gui.Hwnd)
+    return clientX + Round((424 - w / 2) * A_ScreenDPI / 96)
+}
+
+Panel2GroupPopupY(height) {
+    global AutomationPanel2Gui
+    WinGetClientPos(, &clientY, , , "ahk_id " . AutomationPanel2Gui.Hwnd)
+    return clientY + Round(Max(24, 330 - height / 2) * A_ScreenDPI / 96)
+}
+
+; 集合成员的右键菜单：打开、打开所在位置、移出集合。关掉后不影响清单，移出后重新展开集合。
+Panel2MemberMenu(group, path, *) {
+    Panel2PopupClose()
+    colors := ModernPanelColors()
+    member := Panel2MemberItem(path)
+    exists := Panel2ShortcutExists(member)
+    pop := Panel2PopupNew()
+    w := 262, pad := 8, y := pad
+    info := Panel2CardStyle(member, exists, "", "normal")
+    info["shadow"] := 0, info["radius"] := 10, info["padding"] := 12, info["imageSize"] := 26
+    info["subtext"] := path
+    ModernPanelAddElement(pop, pad, y, w - pad * 2, 52, member["name"], info)
+    y += 58
+    Panel2PopupItem(pop, pad, y, w - pad * 2, Map("text", "打开", "icon", Chr(0xE8A7), "action", () => Panel2OpenShortcut(member), "enabled", exists, "bold", true))
+    y += 34
+    Panel2PopupItem(pop, pad, y, w - pad * 2, Map("text", "打开所在位置", "icon", Chr(0xE838), "action", () => Panel2RevealShortcut(member), "enabled", exists))
+    y += 34
+    Panel2PopupItem(pop, pad, y, w - pad * 2, Map("text", "返回集合", "icon", Chr(0xE72B), "action", () => Panel2GroupPopup(group)))
+    y += 34
+    Panel2PopupSeparator(pop, w, &y)
+    Panel2PopupItem(pop, pad, y, w - pad * 2, Map("text", "移出集合（放回列表）", "icon", Chr(0xE8F0)
+        , "action", () => Panel2RemoveFromGroup(group, path), "danger", true))
+    y += 34
+    Panel2PopupShow(pop, w, y + pad)
+}
+
+; “移入集合…”：列出同一页的集合，外加“新建集合…”。
+Panel2MoveToGroupMenu(item) {
+    Panel2PopupClose()
+    colors := ModernPanelColors()
+    pop := Panel2PopupNew()
+    w := 240, pad := 8, y := pad
+    ModernPanelLabelAt(pop, pad + 12, y, w - 40, 28, "把“" . item["name"] . "”移入", ModernPanelTextStyle(colors["secondary"], 9))
+    y += 30
+    for current in Panel2LoadShortcuts() {
+        if !(Panel2IsGroup(current) && current["type"] = item["type"])
+            continue
+        style := Panel2PopupStyle("", colors["text"], "", "")
+        style["padding"] := 10, style["imageSize"] := 22
+        style["imageGrid"] := Panel2CardStyle(current, true, "", "normal")["imageGrid"]
+        style["imageGridFill"] := Panel2ItemColor(current)[2]
+        hover := style.Clone()
+        hover["fill"] := colors["tileHover"]
+        ModernPanelAddElement(pop, pad, y, w - pad * 2, 36, current["name"], style, hover
+            , Panel2PopupAction(Panel2MoveIntoGroup.Bind(item, current)))
+        y += 38
+    }
+    Panel2PopupSeparator(pop, w, &y)
+    Panel2PopupItem(pop, pad, y, w - pad * 2, Map("text", "新建集合…", "icon", Chr(0xE710), "action", Panel2NewGroup.Bind(item["type"], item), "bold", true))
+    y += 34
+    position := IsObject(Panel2PopupLastPos) ? Panel2PopupLastPos : ["", ""]
+    Panel2PopupShow(pop, w, y + pad, position[1], position[2])
+}
+
+; 新建集合：firstItem 不为空时把它作为第一个成员，集合放在它原来的位置。
+Panel2NewGroup(kind, firstItem := "", *) {
+    global AutomationPanel2Gui
+    try AutomationPanel2Gui.Opt("+OwnDialogs")
+    input := InputBox("集合的名称：", "新建集合", "w320 h130", "新集合")
+    name := Trim(input.Value)
+    if (input.Result != "OK" || name = "")
+        return
+    items := Panel2LoadShortcuts()
+    group := Map("type", kind, "name", name, "path", "group:" . Format("{:x}{:04x}", DateDiff(A_NowUTC, "19700101", "Seconds"), Random(0, 0xFFFF))
+        , "members", [])
+    index := IsObject(firstItem) ? Panel2IndexOf(items, firstItem) : 0
+    if index {
+        group["members"].Push(items[index]["path"])
+        items[index] := group
+    } else {
+        items.Push(group)
+    }
+    Panel2SaveShortcuts(items)
+    Panel2Build(kind = "folder" ? "folders" : "apps", true)
+    Panel2SetInfo("已新建集合“" . name . "”", "右键其他卡片选“移入集合…”往里放，双击集合展开。")
+}
+
+Panel2MoveIntoGroup(item, group) {
+    items := Panel2LoadShortcuts()
+    index := Panel2IndexOf(items, item)
+    if !index
+        return
+    items.RemoveAt(index)
+    groupIndex := Panel2IndexOf(items, group)
+    if !groupIndex
+        return
+    items[groupIndex]["members"].Push(item["path"])
+    Panel2SaveShortcuts(items)
+    Panel2Build(group["type"] = "folder" ? "folders" : "apps", true)
+    Panel2SetInfo("已移入集合“" . group["name"] . "”", "双击集合展开；在展开列表里点 × 可移出。")
+}
+
+; 移出集合：成员放回列表，排在集合后面；然后在原位置重新展开集合，方便连续操作。
+Panel2RemoveFromGroup(group, path) {
+    global Panel2PopupLastPos
+    items := Panel2LoadShortcuts()
+    groupIndex := Panel2IndexOf(items, group)
+    if !groupIndex
+        return
+    members := items[groupIndex]["members"]
+    for i, memberPath in members
+        if (memberPath = path) {
+            members.RemoveAt(i)
+            break
+        }
+    if !Panel2FindPath(items, path)
+        items.InsertAt(groupIndex + 1, Panel2MemberItem(path))
+    Panel2SaveShortcuts(items)
+    Panel2Build(group["type"] = "folder" ? "folders" : "apps", true)
+    Panel2GroupPopup(group)
+}
+
+; 在展开列表里直接往集合添加：已在列表里的条目移进来，已在其他集合里的跳过。
+Panel2AddToGroupByDialog(group, *) {
+    global AutomationPanel2Gui, Panel2PopupLastPos
+    try AutomationPanel2Gui.Opt("+OwnDialogs")
+    if (group["type"] = "folder") {
+        folder := DirSelect("", 0, "选择要加入集合“" . group["name"] . "”的文件夹")
+        paths := folder != "" ? [folder] : []
+    } else {
+        selected := FileSelect("M3", "", "选择要加入集合“" . group["name"] . "”的程序或快捷方式"
+            , "程序与快捷方式 (*.exe; *.lnk; *.url; *.bat; *.cmd; *.ps1; *.ahk; *.msc)")
+        paths := IsObject(selected) ? selected : []
+    }
+    if !paths.Length
+        return
+    items := Panel2LoadShortcuts()
+    added := 0, skipped := 0
+    for path in paths {
+        path := Panel2NormalizePath(path)
+        found := Panel2FindPath(items, path)
+        if (found && Panel2IsGroup(items[found])) {
+            skipped += 1
+            continue
+        }
+        if found
+            items.RemoveAt(found)
+        groupIndex := Panel2IndexOf(items, group)
+        if !groupIndex
+            return
+        items[groupIndex]["members"].Push(path)
+        added += 1
+    }
+    if added
+        Panel2SaveShortcuts(items)
+    Panel2Build(group["type"] = "folder" ? "folders" : "apps", true)
+    Panel2SetInfo("已加入 " . added . " 个" . (skipped ? "，" . skipped . " 个已在集合里" : ""), "集合“" . group["name"] . "”")
+    Panel2GroupPopup(group)
 }
 
 Panel2PopupStyle(fill, textColor, icon, iconColor, bold := false) {
@@ -1160,13 +1545,22 @@ Panel2MoveShortcut(item, step) {
 Panel2DeleteShortcut(item) {
     global AutomationPanel2Gui, CustomHotkeyBindings
     try AutomationPanel2Gui.Opt("+OwnDialogs")
-    if (MsgBox("从列表删除“" . item["name"] . "”？`n（只删面板里的条目，不删除文件）", "2号自动化面板", "OKCancel Icon? Default2") != "OK")
+    isGroup := Panel2IsGroup(item)
+    prompt := isGroup
+        ? "解散集合“" . item["name"] . "”？`n里面的 " . item["members"].Length . " 项会放回列表，不删除任何文件。"
+        : "从列表删除“" . item["name"] . "”？`n（只删面板里的条目，不删除文件）"
+    if (MsgBox(prompt, "2号自动化面板", "OKCancel Icon? Default2") != "OK")
         return
     items := Panel2LoadShortcuts()
     index := Panel2IndexOf(items, item)
     if !index
         return
+    members := isGroup ? items[index]["members"] : []
     items.RemoveAt(index)
+    ; 解散：成员按原顺序放回集合所在的位置
+    for i, path in members
+        if !Panel2FindPath(items, path)
+            items.InsertAt(index + i - 1, Panel2MemberItem(path))
     Panel2SaveShortcuts(items)
     ; 条目删掉后它的快捷键也一并取消
     hotkeyId := Panel2ShortcutHotkeyId(item)

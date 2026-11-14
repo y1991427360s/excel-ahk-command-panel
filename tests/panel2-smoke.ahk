@@ -104,6 +104,54 @@ RunPanel2Smoke() {
         Panel2SelectPage(AutomationPanel2Ui, "apps")
         Sleep(300)
 
+        ; 集合：存档往返、移入 / 移出、去重、搜索成员、展开列表、快捷键清单
+        items := Panel2LoadShortcuts()
+        items.Push(Map("type", "app", "name", "工作集合", "path", "group:smoke1", "members", []))
+        Panel2SaveShortcuts(items)
+        Panel2Build("apps", true)
+        groupKey := Map("type", "app", "path", "group:smoke1")
+        group := Panel2FindGroup(groupKey)
+        P2Assert(IsObject(group) && group["name"] = "工作集合" && group["members"].Length = 0, "空集合存档往返")
+        secondPath := work . "\第二个软件.lnk"
+        Panel2MoveIntoGroup(Panel2MemberItem(secondPath), group)
+        group := Panel2FindGroup(groupKey)
+        P2Assert(group["members"].Length = 1 && group["members"][1] = secondPath, "移入集合")
+        topNames := ""
+        for item in Panel2LoadShortcuts()
+            topNames .= item["name"] . "|"
+        P2Assert(!InStr(topNames, "第二个软件"), "移入后不再单独显示：" . topNames)
+        P2Assert(InStr(FileRead(Panel2ShortcutsPath(), "UTF-8"), "group:smoke1`t`t" . secondPath), "集合成员写在第 5 列")
+        Panel2AddPaths([secondPath])
+        P2Assert(Panel2LoadShortcuts().Length = 3, "集合里已有的路径不重复添加")
+        P2Assert(InStr(P2PageText(AutomationPanel2Ui, "apps"), "工作集合"), "集合卡片显示")
+        search := AutomationPanel2Ui["search"]   ; 重建后搜索框是新控件
+        P2Assert(P2Search("deg") = "工作集合|", "搜索成员名命中集合")
+        Panel2ClearSearch()
+        Panel2GroupPopup(group)
+        Sleep(100)
+        P2Assert(Panel2PopupIsOpen(), "展开列表打开")
+        popText := P2PageText(Panel2Popup, "")
+        P2Assert(InStr(popText, "第二个软件") && !InStr(popText, "全部打开") && InStr(popText, "|添加|"), "集合方框内容：" . popText)
+        Panel2PopupClose()
+        memberId := Panel2ShortcutHotkeyId(Panel2MemberItem(secondPath))
+        commandNames := ""
+        for command in CustomHotkeyScope("panel2")["commands"].Call()
+            if (command["id"] = memberId || command["id"] = Panel2ShortcutHotkeyId(group))
+                commandNames .= command["name"] . "|"
+        P2Assert(!InStr(commandNames, "打开集合") && InStr(commandNames, "打开 第二个软件（工作集合）"), "快捷键清单只含成员、不含集合本身：" . commandNames)
+        Panel2RemoveFromGroup(group, secondPath)
+        Sleep(100)
+        Panel2PopupClose()
+        group := Panel2FindGroup(groupKey)
+        P2Assert(group["members"].Length = 0 && Panel2FindPath(Panel2LoadShortcuts(), secondPath), "移出后放回列表")
+        items := Panel2LoadShortcuts()
+        items.RemoveAt(Panel2IndexOf(items, groupKey))
+        Panel2SaveShortcuts(items)
+        Panel2Build("apps", true)
+        Sleep(300)
+        search := AutomationPanel2Ui["search"]
+        P2Assert(P2Search("") = "打开测试|第二个软件|", "移出的成员排在集合后面：" . P2Search(""))
+
         ; 单击选中显示路径，双击打开（.ahk 由 AutoHotkey 运行，写出标记文件）
         tile := ""
         for element in AutomationPanel2Ui["shortcutTiles"]

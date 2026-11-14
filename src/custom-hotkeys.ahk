@@ -191,7 +191,7 @@ CustomHotkeysInit(scopeKey := "main") {
 CustomHotkeyTrayInit() {
     static done := false
     if !done {
-        A_TrayMenu.Insert("1&", "打开自动化面板", (*) => OpenAutomationPanelFromHotkey())
+        A_TrayMenu.Insert("1&", "打开自动化面板", (*) => OpenAutomationPanelFromHotkey(true))
         A_TrayMenu.Insert("2&", "恢复打开面板快捷键为 Ctrl+Shift+E", (*) => CustomHotkeyRestorePanelDefault())
         A_TrayMenu.Insert("3&")
         A_TrayMenu.Default := "打开自动化面板"
@@ -289,10 +289,20 @@ AutomationPanelHotkeyText() {
         ? CustomHotkeyDisplay(CustomHotkeyBindings[CustomHotkeyPanelId]) : "Ctrl+Shift+E"
 }
 
-OpenAutomationPanelFromHotkey(*) {
+; 快捷键按一下打开、再按一下关闭（面板显示着就隐藏）；托盘入口传 forceOpen 只打开。
+OpenAutomationPanelFromHotkey(forceOpen := false, *) {
+    global AutomationPanelGui
     static isOpening := false
     if isOpening
         return
+    if (forceOpen != true && IsObject(AutomationPanelGui)) {
+        visible := false
+        try visible := DllCall("IsWindowVisible", "Ptr", AutomationPanelGui.Hwnd)
+        if visible {
+            try AutomationPanelGui.Hide()
+            return
+        }
+    }
     isOpening := true
     try {
         ShowAutomationPanel()

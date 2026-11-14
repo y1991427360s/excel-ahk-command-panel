@@ -58,6 +58,7 @@
 
 - `src/custom-hotkeys.ahk`：给面板功能绑定全局快捷键。按作用域（每个面板一个）分开：各有功能清单、配置文件、入口快捷键和设置窗口，设置窗口与“快捷键”页只列本作用域的功能。本文件只定义自动化面板作用域 `main`（配置 `%LOCALAPPDATA%\AutoHotkeyPanel\hotkeys.ini`），不得引用 2号面板；其他面板在自己的文件里用 `CustomHotkeyAddScope` 登记。所有作用域共用一张绑定表，组合键全进程唯一。快捷键只是“不开面板直接点按钮”，触发时必须先调 `CaptureAutomationContext()`（与打开面板共用）取选区快照，再经 `RunPanelCommand` 执行，不得另写一套读选区逻辑。
 - 新增自动化面板按钮时同步在 `CustomHotkeyCommands()` 登记；登记的 id 写在用户配置里，改名只改显示名，不改 id。
+- 两个面板的入口快捷键（`OpenAutomationPanelFromHotkey` / `OpenAutomationPanel2FromHotkey`）是开关：窗口可见就隐藏，否则打开；托盘入口传 `true` 只打开（快捷键回调第一个参数是按键名，不能当真值用）。
 - 打开面板也是一条可改的快捷键（id `panel.open`，回调 `OpenAutomationPanelFromHotkey`），不再用 `^+e::` 写死：启动时先注册它，配置无效或被清除时回退 `Ctrl+Shift+E`，任何时候都必须有入口。界面和提示文字里的面板快捷键一律用 `AutomationPanelHotkeyText()`；分享版在 `share-panel.ahk` 覆盖该函数固定返回 `Ctrl+Shift+E`。
 - 所有自定义快捷键用 `HotIf(CustomHotkeyCriterion)` 注册，设置窗口在前台时暂停；改绑走 `CustomHotkeyRebind`，新键失败要恢复旧键。
 - 保留组合键（`Ctrl+Z`、`Ctrl+Tab`、`Ctrl+Shift+Tab`）不得分配；不带 Ctrl/Alt/Win 的普通键不允许（F1~F24 除外）；同一组合键不能分给两个功能。启动时无效条目只记日志，不弹窗。
@@ -65,7 +66,7 @@
 
 ## 2号自动化面板边界
 
-- `modern-panel-ui.ahk` 为此新增的通用能力（自动化面板与分享版也可用）：元素回调 `onDoubleClick` / `onRightClick`；拖动（元素 `dragGroup` + `ui["onDragMove"]` / `ui["onDragEnd"]`，拖动中 `SetCapture`，被拖元素最后画、用 `dragStyle`）；滚动区（`ModernPanelAddScrollRegion`，元素 `scroll` 归区，滚轮滚动并画细滚动条）；缓动（`ModernPanelAnimate`，元素 `tx/ty`）；样式键 `shadow`（1 常态 / 2 悬停 / 3 拖动）、`image`（GDI+ 位图）、`folder`（彩色文件夹图标的主色）、`imageSize`、`subtext` / `subColor`。系统图标用 `ModernPanelFileIcon` 取（48px，按路径缓存）。踩坑：GDI+ 用外部内存创建或 `GdipCloneBitmapAreaI` 克隆的位图会一直引用那块内存，内存释放后会出噪点甚至访问越界，必须让 GDI+ 自己分配再 `LockBits` 拷像素；单独加载组件文件做测试时要加 `#Warn All, StdOut`，否则缺函数的警告框会弹到用户屏幕上。
+- `modern-panel-ui.ahk` 为此新增的通用能力（自动化面板与分享版也可用）：元素回调 `onDoubleClick` / `onRightClick`；拖动（元素 `dragGroup` + `ui["onDragMove"]` / `ui["onDragEnd"]`，拖动中 `SetCapture`，被拖元素最后画、用 `dragStyle`）；滚动区（`ModernPanelAddScrollRegion`，元素 `scroll` 归区，滚轮滚动并画细滚动条）；缓动（`ModernPanelAnimate`，元素 `tx/ty`）；样式键 `shadow`（1 常态 / 2 悬停 / 3 拖动）、`image`（GDI+ 位图）、`imageGrid` / `imageGridFill`（2×2 图标网格）、`folder`（彩色文件夹图标的主色）、`imageSize`、`subtext` / `subColor`。系统图标用 `ModernPanelFileIcon` 取（48px，按路径缓存）。踩坑：GDI+ 用外部内存创建或 `GdipCloneBitmapAreaI` 克隆的位图会一直引用那块内存，内存释放后会出噪点甚至访问越界，必须让 GDI+ 自己分配再 `LockBits` 拷像素；单独加载组件文件做测试时要加 `#Warn All, StdOut`，否则缺函数的警告框会弹到用户屏幕上。
 
 - 个人专用面板，`src/panel2.ahk`，默认 `Alt+Q`。外观复用 `modern-panel-ui.ahk`，与自动化面板同进程但相互独立：自动化面板的源码（`excel-command-panel.ahk`、`custom-hotkeys.ahk`、`modern-panel-ui.ahk`、`share-panel.ahk`）除 `#Include panel2.ahk` 一行外不得出现 2号面板的任何引用；2号面板自带 `#HotIf` 切页热键和托盘项。面板互斥由 `ModernPanelCreate` 销毁旧的非常驻面板、`RunPanelCommand` 调 `ModernPanelHideAll()` 实现。
 - 快捷键自成作用域 `panel2`（`Panel2HotkeysInit` 延后一拍登记，配置 `panel2-hotkeys.ini`，入口 `panel2.open` 默认 `!q`），只在 2号面板“快捷键”页设置。可绑定：入口、MP4 转 GIF、压缩视频、HTML 转 PDF、每个常用软件 / 文件夹（id `panel2.shortcut.<类型+路径的 FNV-1a 哈希>`，命令带 `noContext` 不读选区；删除条目时同时注销并保存）。
@@ -73,7 +74,7 @@
 - 右键菜单是自绘弹窗（`Panel2ShortcutMenu`，`ModernPanelCreate(..., keep=true)`，`-Caption +ToolWindow +E0x08000000` 不抢焦点、`+Owner` 2号面板），不要换回系统 `Menu`（用户嫌难看）。关闭由 60ms 定时器 `Panel2PopupWatch` 判断：菜单外新按下鼠标、`Esc`、面板隐藏或失去前台；`Panel2SearchEscape` / `Panel2OnEscape` 在菜单开着时只关菜单。局部变量别叫 `menu`（与内置 `Menu` 类同名会触发警告）。
 - 不进分享包：分享版不得引用 `Panel2*` / `AutomationPanel2*` 函数。
 - 2026-11-14 起默认输入法、MP4 转 GIF、压缩视频、HTML 转 PDF 的按钮只在 2号面板，自动化面板不再放；实现函数仍在原文件，规则不变。
-- 快捷方式清单在 `%LOCALAPPDATA%\AutoHotkeyPanel\panel2-shortcuts.tsv`（带 BOM 的 UTF-8，`类型<Tab>名称<Tab>路径[<Tab>颜色序号]`），写入先写临时文件再替换；管理按钮（添加、右键菜单）不关闭面板，改完用 `Panel2Build(page, true)` 原位重建。卡片两列（`Panel2GridLayout`），样式由 `Panel2CardStyle` 统一生成（柔和底色 + 主色，配色表 `Panel2Palette`，按路径自动分配，同一路径颜色固定）。拖动排序：卡片设 `dragGroup`，`Panel2OnDragMove` 按鼠标格子把卡片插入新位置、其余卡片设 `tx/ty` 缓动让位，`Panel2OnDragEnd` 用 `Panel2SaveOrder` 只重排同类型条目。
+- 快捷方式清单在 `%LOCALAPPDATA%\AutoHotkeyPanel\panel2-shortcuts.tsv`（带 BOM 的 UTF-8，`类型<Tab>名称<Tab>路径[<Tab>颜色序号]`），写入先写临时文件再替换；管理按钮（添加、右键菜单）不关闭面板，改完用 `Panel2Build(page, true)` 原位重建。卡片两列（`Panel2GridLayout`），样式由 `Panel2CardStyle` 统一生成（柔和底色 + 主色，配色表 `Panel2Palette`，按路径自动分配，同一路径颜色固定）。集合：路径 `group:<编号>`、第 5 列成员路径以 `|` 分隔，条目带 `members` 即集合（`Panel2IsGroup`）；成员用 `Panel2MemberItem` 按路径实际类型生成普通条目（快捷键 id 因此与移入前一致）；去重用 `Panel2FindPath`（含集合成员）；展开方框 `Panel2GroupPopup`（居中在内容区，成员用 `Panel2CardStyle` 卡片网格，不要做成菜单列表——用户嫌难看）、成员右键 `Panel2MemberMenu`、移入 `Panel2MoveToGroupMenu` 与右键菜单共用 `Panel2PopupNew` / `Panel2PopupShow`；卡片图标用 `modern-panel-ui` 的样式键 `imageGrid`（位图句柄或颜色串，2×2 最多 4 个）+ `imageGridFill`。拖动排序：卡片设 `dragGroup`，`Panel2OnDragMove` 按鼠标格子把卡片插入新位置、其余卡片设 `tx/ty` 缓动让位，`Panel2OnDragEnd` 用 `Panel2SaveOrder` 只重排同类型条目。
 - 回归：`tests/panel2-smoke.ahk`，`LOCALAPPDATA` 指到含 `panel2-smoke` 的临时目录。
 
 ## AI 改 CAD 文字边界

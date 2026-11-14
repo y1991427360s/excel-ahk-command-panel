@@ -607,7 +607,8 @@ ModernPanelDrawElement(graphics, x, y, width, height, text, style, scale, isGlas
 
     hasImage := style.Has("image") && style["image"]
     hasFolder := style.Has("folder") && style["folder"] != ""
-    if (text = "" && style["icon"] = "" && !hasImage && !hasFolder)
+    hasGrid := style.Has("imageGrid") && IsObject(style["imageGrid"])
+    if (text = "" && style["icon"] = "" && !hasImage && !hasFolder && !hasGrid)
         return
     format := 0, textBrush := 0
     ; 0x1000 NoWrap；样式带 lineLimit 时换行文字只画完整的行（0x2000 LineLimit），放不下的以省略号结尾
@@ -627,11 +628,32 @@ ModernPanelDrawElement(graphics, x, y, width, height, text, style, scale, isGlas
     ; 左侧图标（Segoe MDL2 Assets），文字随之右移，与桌宠菜单的图标列一致
     iconOffset := 0
     ; 图片图标（GDI+ 位图，如软件自身的图标）或彩色文件夹图标，尺寸 imageSize（逻辑像素）
-    if (hasImage || hasFolder) {
+    if (hasImage || hasFolder || hasGrid) {
         imageSize := (style.Has("imageSize") ? style["imageSize"] : 24) * scale
         imageX := x + padding
         imageY := y + (height - imageSize) / 2
-        if hasImage {
+        if hasGrid {
+            ; 图标网格（集合）：圆角底板上 2×2 排最多 4 个小图标；项为 GDI+ 位图句柄，或 6 位颜色串（画彩色文件夹）
+            board := ModernPanelRoundPath(imageX, imageY, imageSize, imageSize, imageSize * 0.26)
+            ModernPanelFillPath(graphics, board, ModernPanelArgb(style.Has("imageGridFill") ? style["imageGridFill"] : "FFFFFF"))
+            DllCall("gdiplus\GdipDeletePath", "Ptr", board)
+            inset := imageSize * 0.13, gap := imageSize * 0.07
+            cell := (imageSize - inset * 2 - gap) / 2
+            DllCall("gdiplus\GdipSetInterpolationMode", "Ptr", graphics, "Int", 7)
+            for index, entry in style["imageGrid"] {
+                if (index > 4)
+                    break
+                cellX := imageX + inset + Mod(index - 1, 2) * (cell + gap)
+                cellY := imageY + inset + ((index - 1) // 2) * (cell + gap)
+                if (entry is Integer) {
+                    if entry
+                        DllCall("gdiplus\GdipDrawImageRect", "Ptr", graphics, "Ptr", entry
+                            , "Float", cellX, "Float", cellY, "Float", cell, "Float", cell)
+                } else if (entry != "") {
+                    ModernPanelDrawFolderIcon(graphics, cellX, cellY, cell, ModernPanelArgb(entry))
+                }
+            }
+        } else if hasImage {
             DllCall("gdiplus\GdipSetInterpolationMode", "Ptr", graphics, "Int", 7)   ; HighQualityBicubic
             DllCall("gdiplus\GdipDrawImageRect", "Ptr", graphics, "Ptr", style["image"]
                 , "Float", imageX, "Float", imageY, "Float", imageSize, "Float", imageSize)
